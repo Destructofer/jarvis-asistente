@@ -1,0 +1,15 @@
+# Entorno virtual y caché de Python (cada quien crea el suyo con requirements.txt)
+.venv/
+__pycache__/
+*.pyc
+
+# Datos privados: memoria personal, historial de conversación, tokens de Spotify, registro,
+# e índice de apps de esta PC (todo se regenera solo al usarlo, nada de esto se comparte)
+datos/
+
+# Ajustes locales que no deben pisar los de otros (cada quien copia config.example.json)
+config.json
+
+# Modelo de voz (63 MB): se comparte aparte, no por git. Ver voces/README.md
+voces/*.onnx
+voces/*.onnx.json

@@ -1,0 +1,211 @@
+{
+  "name": "Jarvis",
+  "model": "qwen2.5:7b",
+  "language": "es",
+  "personality": "Eres Jarvis, el asistente personal de inteligencia artificial del usuario, inspirado en J.A.R.V.I.S. de Iron Man: elegante, eficiente, seguro y con un humor fino y breve. Te diriges al usuario como 'señor' de vez en cuando, sin abusar. Responde únicamente en español. Nunca uses caracteres chinos ni de otros idiomas. Sé muy conciso: por defecto responde en 1 o 2 frases cortas. Tienes herramientas para controlar la computadora del usuario: úsalas siempre que pida una acción (abrir apps, cambiar de ventana, presionar teclas, escribir, dar clic en botones, volumen, capturas, hora, búsquedas, presentaciones, etc.). Nunca digas que hiciste algo sin haber usado la herramienta correspondiente. Tras usarla, confirma el resultado en una frase corta. Para preguntas normales, responde sin herramientas. Si el usuario dice mal o el reconocimiento de voz deforma el nombre de una app, canción, artista, botón o archivo, usa tu mejor interpretación en la herramienta en lugar de preguntar. Para cambiar a una app que ya está abierta usa enfocar_ventana; para abrirla, abrir_app. Para presentaciones usa abrir_presentacion y presentacion. Para dar clic en un botón de una página o programa usa clic_en con el texto del botón; si no sabes cómo se llama, lee primero con leer_ventana. Si una orden tiene varios pasos (abre algo y luego da clic), hazlos uno por uno comprobando cada resultado. Si el usuario menciona una rutina o demo guardada, usa rutina. Para música usa la herramienta spotify (o youtube si pide un vídeo o menciona YouTube). Para Microsoft Teams no hay una herramienta por función: navega con teams_abrir/teams_click y lee lo que hay con teams_leer_pantalla, encadenando varios pasos (navega, lee, decide el siguiente clic) hasta cumplir lo que pidió el usuario; nunca inventes qué hay en pantalla, léelo primero. Nunca uses teams_enviar_mensaje sin que el usuario haya dicho explícitamente qué mandar. Para analizar una tarea o actividad de una clase usa teams_analizar_tarea, que junta y lee todo el material relacionado (incluido lo que el profesor haya separado en subcanales); con eso explica con precisión qué se pide, en qué consiste y qué se debe entregar. Nunca generes ni entregues la tarea resuelta ni redactes el trabajo completo del usuario: tu papel es analizar y explicar el material, no hacer la actividad por él. Si el usuario pide explícitamente que la resuelvas o la hagas tú, dile que no lo harás por honestidad académica, y ofrece en su lugar explicarle qué se pide o ayudarlo a entenderla.",
+  "modo": "auto",
+  "ollama_ctx": 16384,
+  "nube": {
+    "url": "https://api.groq.com/openai/v1",
+    "modelo": "openai/gpt-oss-120b",
+    "clave_env": "GROQ_API_KEY",
+    "timeout": 20,
+    "respaldos": [
+      "openai/gpt-oss-20b"
+    ],
+    "razonamiento": "low"
+  },
+  "voz_activa": true,
+  "voz_velocidad": 180,
+  "voz_nombre": "es_MX-claude-high",
+  "elevenlabs_voz": "",
+  "elevenlabs": {
+    "modelo": "eleven_flash_v2_5",
+    "estabilidad": 0.45,
+    "similitud": 0.8,
+    "estilo": 0.3,
+    "velocidad": 1.0
+  },
+  "voz_motor": "auto",
+  "edge_voz": "es-MX-JorgeNeural",
+  "edge_velocidad": "+5%",
+  "edge_tono": "+0Hz",
+  "whisper_modelo": "small",
+  "stt": {
+    "modo": "auto",
+    "url": "https://api.groq.com/openai/v1",
+    "modelo": "whisper-large-v3-turbo",
+    "clave_env": "GROQ_API_KEY",
+    "timeout": 10
+  },
+  "mic_umbral": 0.004,
+  "mic_calibrar": true,
+  "mic_dispositivo": "",
+  "mic_ganancia": 1.0,
+  "silencio_seg": 0.8,
+  "ventana_entrada": false,
+  "palabra_activacion": true,
+  "palabras_activacion": [
+    "jarvis",
+    "yarvis",
+    "jarvi",
+    "charvis",
+    "harvis",
+    "llarvis",
+    "yervis",
+    "jervis"
+  ],
+  "whisper_modelo_wake": "base",
+  "motor_activacion": "openwakeword",
+  "oww_modelo": "hey_jarvis",
+  "oww_sensibilidad": 0.5,
+  "pitido_activacion": true,
+  "pausa_tras_hablar": 0.6,
+  "avisar_no_escuche": true,
+  "salida_privada": "",
+  "salida_publico": "",
+  "skills": {
+    "hora_fecha": true,
+    "info_sistema": true,
+    "abrir_app": true,
+    "abrir_carpeta": true,
+    "volumen": true,
+    "captura_pantalla": true,
+    "buscar_web": true,
+    "abrir_web": true,
+    "bloquear_pantalla": true,
+    "cancelar_apagado": true,
+    "apagar_equipo": true,
+    "reiniciar_equipo": true,
+    "wifi": true,
+    "recordar": true,
+    "consultar_memoria": true,
+    "olvidar": true,
+    "olvidar_todo": true,
+    "temporizador": true,
+    "recordatorio": true,
+    "listar_avisos": true,
+    "cancelar_avisos": true,
+    "musica": true,
+    "buscar_archivo": true,
+    "abrir_archivo": true,
+    "youtube": true,
+    "spotify": true,
+    "conectar_spotify": true,
+    "teams_abrir": true,
+    "teams_click": true,
+    "teams_leer_pantalla": true,
+    "teams_desplazar": true,
+    "teams_enviar_mensaje": true,
+    "cerrar_app": true,
+    "revisar_equipo": true,
+    "limpiar_temporales": true,
+    "vaciar_papelera": true,
+    "conectar_archivos_teams": true,
+    "teams_listar_clases": true,
+    "teams_buscar_archivos_clase": true,
+    "teams_analizar_tarea": true,
+    "listar_microfonos": true,
+    "cambiar_microfono": true,
+    "enfocar_ventana": true,
+    "presionar_teclas": true,
+    "escribir_texto": true,
+    "cerrar_ventana_activa": true,
+    "clic_en": true,
+    "leer_ventana": true,
+    "rutina": true,
+    "listar_rutinas": true,
+    "abrir_presentacion": true,
+    "presentacion": true,
+    "explicar_diapositiva": true,
+    "modo_expositor": true,
+    "mirar": true,
+    "presentarse_al_publico": true,
+    "hablar_al_publico": true,
+    "desplazar": true,
+    "recorrer_y_explicar": true
+  },
+  "mantenimiento_activo": true,
+  "mantenimiento_intervalo_min": 30,
+  "apps": {
+    "opera gx": "%LOCALAPPDATA%\\Programs\\Opera GX\\opera.exe",
+    "visual studio code": "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe"
+  },
+  "expositor": {
+    "al_iniciar": false,
+    "presentador": "Chris",
+    "estilo": "",
+    "presentacion_extra": ""
+  },
+  "camara": {
+    "fuente": "webcam",
+    "webcam_indice": 1,
+    "ventana_titulo": "WhatsApp",
+    "recorte": [
+      0,
+      0,
+      1,
+      1
+    ],
+    "http_puerto": 8765,
+    "http_token": "",
+    "archivo": ""
+  },
+  "vision": {
+    "modo": "auto",
+    "nube": {
+      "url": "https://api.groq.com/openai/v1",
+      "modelo": "qwen/qwen3.8-27b",
+      "clave_env": "GROQ_API_KEY",
+      "timeout": 25
+    },
+    "local_modelo": "qwen2.5vl:7b",
+    "max_tokens": 400
+  },
+  "hud": {
+    "activo": true,
+    "solo_expositor": false,
+    "subtitulos": "expositor",
+    "monitor": "auto",
+    "posicion": "abajo_derecha",
+    "tamano": 150,
+    "letra": 22,
+    "mostrar_vista": true,
+    "ancho_vista": 280
+  },
+  "presentacion_max_contexto": 6000,
+  "vocabulario_extra": [],
+  "rutinas": {
+    "demo de mi software": [
+      {
+        "abrir_web": {
+          "url": "https://tu-software.com"
+        }
+      },
+      {
+        "esperar": 4
+      },
+      {
+        "clic_en": {
+          "texto": "Iniciar sesión"
+        }
+      },
+      {
+        "decir": "Señoras y señores, este es el sistema en vivo."
+      }
+    ],
+    "regresar a la presentacion": [
+      {
+        "enfocar_ventana": {
+          "nombre": "PowerPoint"
+        }
+      },
+      {
+        "presentacion": {
+          "accion": "iniciar_aqui"
+        }
+      }
+    ]
+  },
+  "nubes_extra": []
+}
