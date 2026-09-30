@@ -16,11 +16,14 @@ from skills import skill
 
 _CFG = {}
 _notificar = None  # genesis.py instala aquí cómo avisar (voz) cuando hay algo que mostrar
+_ocupado = None    # genesis.py: fn() -> True si estás exponiendo (no se revisa ni se avisa)
+_hilo = None
 
 TEMP_DIRS = [Path(os.environ.get("TEMP", "")), Path("C:/Windows/Temp")]
 AVISADOS_PATH = Path(__file__).parent / "datos" / "mantenimiento.json"
 
 UMBRAL_TEMP_GB = 2.0
+TEMP_DIAS_MINIMO = 2   # solo se borran temporales con más de estos días sin tocarse
 UMBRAL_PAPELERA_GB = 1.0
 UMBRAL_DISCO_LIBRE_GB = 15.0
 UMBRAL_RAM_PCT = 88
@@ -153,28 +156,51 @@ def analizar():
 
 
 # ---------- Acciones reales ----------
-def _limpiar_temporales_real():
-    liberado, fallos = 0, 0
+def _es_enlace(ruta):
+    """Symlinks y "junctions" de Windows: se borra el enlace, nunca lo que hay del otro lado
+    (un junction dentro de Temp podría apuntar a Documentos)."""
+    try:
+        return ruta.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(ruta))
+    except OSError:
+        return True
+
+
+def _limpiar_temporales_real(dias_minimo=None):
+    """Borra temporales VIEJOS. Antes se borraba todo lo que no estuviera bloqueado, incluidos
+    archivos que programas abiertos aún usan (p. ej. un documento abierto desde un .zip vive
+    en Temp): ahora solo lo que lleva días sin tocarse."""
+    dias = TEMP_DIAS_MINIMO if dias_minimo is None else dias_minimo
+    limite = time.time() - dias * 86400
+    liberado, fallos, recientes = 0, 0, 0
     for base in TEMP_DIRS:
         if not base.is_dir():
             continue
-        for raiz, dirs, archivos in os.walk(base, topdown=False):
+        for raiz, dirs, archivos in os.walk(base, topdown=False, followlinks=False):
+            raiz = Path(raiz)
             for a in archivos:
-                p = Path(raiz) / a
+                p = raiz / a
                 try:
-                    tam = p.stat().st_size
+                    if _es_enlace(p):
+                        continue
+                    st = p.stat()
+                    if max(st.st_mtime, st.st_atime) > limite:
+                        recientes += 1
+                        continue
                     p.unlink()
-                    liberado += tam
+                    liberado += st.st_size
                 except OSError:
                     fallos += 1
             for d in dirs:
+                sub = raiz / d
                 try:
-                    (Path(raiz) / d).rmdir()  # solo cae si ya quedó vacía
+                    if _es_enlace(sub):
+                        continue
+                    sub.rmdir()  # solo cae si ya quedó vacía
                 except OSError:
                     pass
     texto = f"Liberé {liberado / 1e9:.2f} GB de temporales."
-    if fallos:
-        texto += f" ({fallos} archivos en uso, se dejaron)."
+    if fallos or recientes:
+        texto += f" (Dejé {fallos + recientes} archivos en uso o de los últimos {dias} días)."
     return texto
 
 
@@ -231,12 +257,21 @@ def _mostrar_panel(hallazgos, resumen):
     return True
 
 
+def _exponiendo():
+    try:
+        return bool(_ocupado and _ocupado())
+    except Exception:
+        return False
+
+
 def _vigilar():
     intervalo = _CFG.get("mantenimiento_intervalo_min", 30) * 60
-    time.sleep(120)  # deja que Genesis termine de arrancar antes de la primera revisión
+    time.sleep(120)  # deja que Jarvis termine de arrancar antes de la primera revisión
     while True:
         try:
-            if _CFG.get("mantenimiento_activo", True):
+            # En plena exposición NO: un panel encima de la presentación y un "revisé el
+            # equipo" por las bocinas frente al jurado es lo último que se quiere.
+            if _CFG.get("mantenimiento_activo", True) and not _exponiendo():
                 _, hallazgos, resumen = analizar()
                 _avisar_si_hace_falta(hallazgos, resumen)
         except Exception as e:
@@ -244,12 +279,16 @@ def _vigilar():
         time.sleep(intervalo)
 
 
-def iniciar(cfg, notificar):
-    global _CFG, _notificar
+def iniciar(cfg, notificar, ocupado=None):
+    """Se puede llamar varias veces (iniciar_genesis.pyw reinicia main() si algo falla): el
+    hilo de vigilancia es uno solo. Antes cada reinicio sumaba otro y los avisos se repetían."""
+    global _CFG, _notificar, _ocupado, _hilo
     _CFG = cfg
     _notificar = notificar
-    if cfg.get("mantenimiento_activo", True):
-        threading.Thread(target=_vigilar, daemon=True, name="mantenimiento").start()
+    _ocupado = ocupado
+    if cfg.get("mantenimiento_activo", True) and (_hilo is None or not _hilo.is_alive()):
+        _hilo = threading.Thread(target=_vigilar, daemon=True, name="mantenimiento")
+        _hilo.start()
 
 
 # ---------- Skills ----------

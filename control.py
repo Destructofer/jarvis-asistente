@@ -19,7 +19,7 @@ import apps
 import memoria
 import skills
 from apps import fonetica, puntaje
-from skills import Callado, _norm, skill
+from skills import Callado, Fallo, _norm, skill
 
 pyautogui.FAILSAFE = False  # sin esto, si el mouse queda en una esquina pyautogui lanza error
 pyautogui.PAUSE = 0.03
@@ -34,10 +34,15 @@ CLICABLES = ("Button", "Hyperlink", "MenuItem", "TabItem", "ListItem", "TreeItem
 LEGIBLES = CLICABLES + ("Text", "Header", "HeaderItem", "DataItem")
 UMBRAL_CLIC = 0.5
 
-# Clics que hacen algo difícil de deshacer: siempre se confirman
+# Clics que hacen algo difícil de deshacer o que otras personas ven (enviar, entregar,
+# publicar, unirse a una llamada): siempre se confirman. Mismo criterio que teams.py, para que
+# Teams abierto en el navegador no se salte la protección que sí tiene la app.
 PELIGROSOS = [fonetica(x) for x in (
     "eliminar", "borrar", "quitar", "pagar", "comprar", "confirmar compra", "desinstalar",
-    "formatear", "salir de la cuenta", "cerrar sesion", "delete", "remove", "pay", "buy")]
+    "formatear", "salir de la cuenta", "cerrar sesion", "delete", "remove", "pay", "buy",
+    "entregar", "deshacer entrega", "enviar", "reenviar", "send", "submit", "publicar",
+    "publish", "transferir", "transfer", "unirse", "reunirse", "llamar",
+    "sign out", "signout", "log out", "logout", "abandonar", "salir del equipo")]
 
 # Clases de ventana que no son "una app" (escritorio, barra de tareas...)
 CLASES_SISTEMA = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
@@ -182,9 +187,9 @@ def traer_al_frente(hwnd):
 def enfocar_ventana(nombre):
     h, titulo, p = buscar_ventana(nombre)
     if h is None or p < apps.UMBRAL_INTENTO:
-        return f"No tengo ninguna ventana abierta parecida a '{nombre}'. Puedo abrirla con abrir_app."
+        return Fallo(f"No tengo ninguna ventana abierta parecida a '{nombre}'. Puedo abrirla con abrir_app.")
     if not traer_al_frente(h):
-        return f"Encontré '{titulo}' pero Windows no me dejó traerla al frente."
+        return Fallo(f"Encontré '{titulo}' pero Windows no me dejó traerla al frente.")
     return f"Listo, en {titulo}."
 
 
@@ -232,7 +237,7 @@ def interpretar_teclas(texto):
 def presionar_teclas(teclas, veces=1):
     lista = interpretar_teclas(teclas)
     if not lista:
-        return f"No reconozco la tecla '{teclas}'."
+        return Fallo(f"No reconozco la tecla '{teclas}'.")
     veces = max(1, min(20, int(veces or 1)))
     for _ in range(veces):
         if len(lista) == 1:
@@ -346,6 +351,22 @@ def _parecido(buscado, nombre):
     return p
 
 
+def es_peligroso(nombre):
+    """True si pulsar un control con este texto hace algo difícil de deshacer o que otros ven.
+
+    Se compara por palabras, no por subcadenas: "send" no debe saltar con "Descendente" ni
+    "llamar" con "Llamadas". Los términos largos aceptan terminaciones ("Enviarlo",
+    "Eliminarlos"); los cortos ("pay", "send") tienen que ser la palabra exacta."""
+    palabras = fonetica(nombre).split()
+    for termino in PELIGROSOS:
+        partes = termino.split()
+        for i in range(len(palabras) - len(partes) + 1):
+            if all(w == p or (len(p) >= 5 and w.startswith(p))
+                   for w, p in zip(palabras[i:i + len(partes)], partes)):
+                return True
+    return False
+
+
 def mejor_elemento(elementos, texto):
     mejor = (None, "", "", 0.0)
     for n, nombre, tipo in elementos:
@@ -390,12 +411,12 @@ def clic_en(texto, ventana=""):
     if ventana.strip():
         h, titulo, p = buscar_ventana(ventana)
         if h is None or p < apps.UMBRAL_INTENTO:
-            return f"No encontré la ventana '{ventana}'."
+            return Fallo(f"No encontré la ventana '{ventana}'.")
         traer_al_frente(h)
     else:
         h = ventana_activa()
         if not h:
-            return "No hay ninguna ventana al frente."
+            return Fallo("No hay ninguna ventana al frente.")
         titulo = _titulo(h)
 
     raiz = _raiz_uia(h)
@@ -409,13 +430,13 @@ def clic_en(texto, ventana=""):
         # la primera consulta puede venir casi vacía. Se espera y se vuelve a leer.
         time.sleep(1.2)
     else:
-        return (f"No encontré nada parecido a '{texto}' en {titulo}. "
-                f"Veo {len(elementos)} elementos; puedo leerte la ventana con leer_ventana.")
+        return Fallo(f"No encontré nada parecido a '{texto}' en {titulo}. "
+                     f"Veo {len(elementos)} elementos; puedo leerte la ventana con leer_ventana.")
 
-    if any(x in fonetica(nombre) for x in PELIGROSOS):
+    if es_peligroso(nombre):
         if memoria.pedir_confirmacion is None or not memoria.pedir_confirmacion(
                 f"Voy a pulsar '{nombre}'. ¿Confirmas?"):
-            return f"No pulsé '{nombre}'."
+            return Fallo(f"No pulsé '{nombre}'.")
     traer_al_frente(h)
     _hacer_clic(nodo, tipo)
     time.sleep(0.5)
@@ -432,11 +453,11 @@ def leer_ventana(ventana=""):
     if ventana.strip():
         h, _t, p = buscar_ventana(ventana)
         if h is None or p < apps.UMBRAL_INTENTO:
-            return f"No encontré la ventana '{ventana}'."
+            return Fallo(f"No encontré la ventana '{ventana}'.")
     else:
         h = ventana_activa()
         if not h:
-            return "No hay ninguna ventana al frente."
+            return Fallo("No hay ninguna ventana al frente.")
     raiz = _raiz_uia(h)
     vistos, lineas = set(), []
     for _n, nombre, tipo in _elementos(raiz, LEGIBLES):
@@ -451,7 +472,21 @@ def leer_ventana(ventana=""):
 
 
 # ---------- Rutinas (demos que salen igual siempre) ----------
-FALLOS = ("no ", "error", "el usuario cancel", "esa funcion esta desactivada", "la herramienta")
+# Respaldo para skills que todavía devuelven un str normal al fallar (las que ya devuelven
+# skills.Fallo no dependen de esto). Frases concretas: "No había ningún apagado programado"
+# no es un fallo, y "Windows no me dejó traerla al frente" sí lo es.
+FALLOS = ("no encontre", "no pude", "no puedo", "no hay ninguna", "no tengo", "no reconozco",
+          "no conozco", "no logre", "no se cerro", "no pulse", "no abri", "no envie",
+          "error", "el usuario cancel", "el usuario no lo permitio", "esa funcion esta desactivada",
+          "la herramienta", "la presentacion no esta", "no me dejo", "no me ha llegado")
+
+
+def fallo(resultado):
+    """True si el resultado de una skill indica que la acción no se hizo."""
+    if isinstance(resultado, Fallo):
+        return True
+    t = _norm(resultado)
+    return t.startswith(FALLOS) or any(f" {x}" in f" {t}" for x in ("no me dejo", "no se cerro"))
 
 
 def _rutinas():
@@ -475,16 +510,23 @@ def rutina(nombre):
     clave, pasos = _buscar_rutina(nombre)
     if not clave:
         disponibles = ", ".join(_rutinas()) or "ninguna"
-        return f"No tengo una rutina parecida a '{nombre}'. Rutinas: {disponibles}."
+        return Fallo(f"No tengo una rutina parecida a '{nombre}'. Rutinas: {disponibles}.")
     if ejecutor is None:
-        return "Las rutinas no están listas todavía."
+        return Fallo("Las rutinas no están listas todavía.")
     hablo = False
     for i, paso in enumerate(pasos, 1):
-        if not isinstance(paso, dict) or len(paso) != 1:
-            return f"El paso {i} de '{clave}' está mal escrito en config.json."
-        accion, valor = next(iter(paso.items()))
+        if skills.INTERRUPCION.is_set():
+            return Callado(f"Rutina '{clave}' detenida en el paso {i}.")
+        if not isinstance(paso, dict) or not paso:
+            return Fallo(f"El paso {i} de '{clave}' está mal escrito en config.json.")
+        # Un paso puede llevar "continuar_si_falla": true además de su acción
+        seguir = bool(paso.get("continuar_si_falla", False))
+        acciones = [(k, v) for k, v in paso.items() if k != "continuar_si_falla"]
+        if len(acciones) != 1:
+            return Fallo(f"El paso {i} de '{clave}' está mal escrito en config.json.")
+        accion, valor = acciones[0]
         if accion == "esperar":
-            time.sleep(float(valor))
+            skills.INTERRUPCION.wait(float(valor))  # espera, pero se corta si lo interrumpen
             continue
         if accion == "decir":
             if hablar:
@@ -492,10 +534,10 @@ def rutina(nombre):
                 hablo = True
             continue
         args = valor if isinstance(valor, dict) else {}
-        resultado = str(ejecutor(accion, args))
-        print(f"[Rutina {clave} · paso {i}] {accion} -> {resultado[:120]}")
-        if _norm(resultado).startswith(FALLOS):
-            return f"La rutina '{clave}' se detuvo en el paso {i} ({accion}): {resultado}"
+        resultado = ejecutor(accion, args)
+        print(f"[Rutina {clave} · paso {i}] {accion} -> {str(resultado)[:120]}")
+        if fallo(resultado) and not seguir:
+            return Fallo(f"La rutina '{clave}' se detuvo en el paso {i} ({accion}): {resultado}")
     fin = f"Rutina '{clave}' completada."
     return Callado(fin) if hablo else fin
 

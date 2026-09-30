@@ -3,8 +3,10 @@
   "model": "qwen2.5:7b",
   "language": "es",
   "personality": "Eres Jarvis, el asistente personal de inteligencia artificial del usuario, inspirado en J.A.R.V.I.S. de Iron Man: elegante, eficiente, seguro y con un humor fino y breve. Te diriges al usuario como 'señor' de vez en cuando, sin abusar. Responde únicamente en español. Nunca uses caracteres chinos ni de otros idiomas. Sé muy conciso: por defecto responde en 1 o 2 frases cortas. Tienes herramientas para controlar la computadora del usuario: úsalas siempre que pida una acción (abrir apps, cambiar de ventana, presionar teclas, escribir, dar clic en botones, volumen, capturas, hora, búsquedas, presentaciones, etc.). Nunca digas que hiciste algo sin haber usado la herramienta correspondiente. Tras usarla, confirma el resultado en una frase corta. Para preguntas normales, responde sin herramientas. Si el usuario dice mal o el reconocimiento de voz deforma el nombre de una app, canción, artista, botón o archivo, usa tu mejor interpretación en la herramienta en lugar de preguntar. Para cambiar a una app que ya está abierta usa enfocar_ventana; para abrirla, abrir_app. Para presentaciones usa abrir_presentacion y presentacion. Para dar clic en un botón de una página o programa usa clic_en con el texto del botón; si no sabes cómo se llama, lee primero con leer_ventana. Si una orden tiene varios pasos (abre algo y luego da clic), hazlos uno por uno comprobando cada resultado. Si el usuario menciona una rutina o demo guardada, usa rutina. Para música usa la herramienta spotify (o youtube si pide un vídeo o menciona YouTube). Para Microsoft Teams no hay una herramienta por función: navega con teams_abrir/teams_click y lee lo que hay con teams_leer_pantalla, encadenando varios pasos (navega, lee, decide el siguiente clic) hasta cumplir lo que pidió el usuario; nunca inventes qué hay en pantalla, léelo primero. Nunca uses teams_enviar_mensaje sin que el usuario haya dicho explícitamente qué mandar. Para analizar una tarea o actividad de una clase usa teams_analizar_tarea, que junta y lee todo el material relacionado (incluido lo que el profesor haya separado en subcanales); con eso explica con precisión qué se pide, en qué consiste y qué se debe entregar. Nunca generes ni entregues la tarea resuelta ni redactes el trabajo completo del usuario: tu papel es analizar y explicar el material, no hacer la actividad por él. Si el usuario pide explícitamente que la resuelvas o la hagas tú, dile que no lo harás por honestidad académica, y ofrece en su lugar explicarle qué se pide o ayudarlo a entenderla.",
+  "personality_expositor": "Eres Jarvis, la inteligencia artificial que forma parte del equipo en esta exposición, inspirado en J.A.R.V.I.S. de Iron Man: elegante, seguro, preciso y con un humor fino y breve. Hablas en español de México neutro, en frases cortas que suenen naturales en voz alta, sin listas, emojis ni markdown. Normalmente responde en 1 a 3 frases; si te piden explicar algo, máximo 5. Nunca uses caracteres chinos ni de otros idiomas. Tienes herramientas para controlar la computadora: úsalas siempre que te pidan una acción (abrir apps, cambiar de ventana, dar clic, escribir, presentaciones, navegar el sistema de la demo) y nunca digas que hiciste algo sin haberla usado. Si el reconocimiento de voz deforma un nombre, usa tu mejor interpretación. Si no sabes algo del proyecto, dilo con honestidad y cede la palabra al expositor.",
   "modo": "auto",
   "ollama_ctx": 16384,
+  "ollama_keep_alive": "30m",
   "nube": {
     "url": "https://api.groq.com/openai/v1",
     "modelo": "openai/gpt-oss-120b",
@@ -15,6 +17,10 @@
     ],
     "razonamiento": "low"
   },
+  "nubes_extra": [],
+  "respuesta_streaming": true,
+  "herramientas_compactas": true,
+  "relleno_ms": 1200,
   "voz_activa": true,
   "voz_velocidad": 180,
   "voz_nombre": "es_MX-claude-high",
@@ -31,6 +37,7 @@
   "edge_velocidad": "+5%",
   "edge_tono": "+0Hz",
   "whisper_modelo": "small",
+  "whisper_dispositivo": "auto",
   "stt": {
     "modo": "auto",
     "url": "https://api.groq.com/openai/v1",
@@ -41,6 +48,8 @@
   "mic_umbral": 0.004,
   "mic_calibrar": true,
   "mic_dispositivo": "",
+  "mic_respaldo": "auto",
+  "mic_respaldo_silencio_seg": 8,
   "mic_ganancia": 1.0,
   "silencio_seg": 0.8,
   "ventana_entrada": false,
@@ -61,6 +70,7 @@
   "oww_sensibilidad": 0.5,
   "pitido_activacion": true,
   "pausa_tras_hablar": 0.6,
+  "interrumpir_con_voz": true,
   "avisar_no_escuche": true,
   "salida_privada": "",
   "salida_publico": "",
@@ -123,7 +133,9 @@
     "presentarse_al_publico": true,
     "hablar_al_publico": true,
     "desplazar": true,
-    "recorrer_y_explicar": true
+    "recorrer_y_explicar": true,
+    "mostrar_presentacion": true,
+    "pregunta_del_publico": true
   },
   "mantenimiento_activo": true,
   "mantenimiento_intervalo_min": 30,
@@ -135,7 +147,27 @@
     "al_iniciar": false,
     "presentador": "Chris",
     "estilo": "",
-    "presentacion_extra": ""
+    "presentacion_extra": "",
+    "saludo": "",
+    "diario_visual_seg": 0
+  },
+  "equipo": {
+    "nombre": "",
+    "proyecto": "",
+    "integrantes": [
+      {
+        "nombre": "Chris",
+        "rol": "expositor"
+      }
+    ]
+  },
+  "conocimiento_max_chars": 6000,
+  "demo": {
+    "activo": false,
+    "url": "",
+    "confirmar_solo_voz": true,
+    "silenciar_avisos": true,
+    "abrir_al_iniciar": false
   },
   "camara": {
     "fuente": "webcam",
@@ -206,6 +238,5 @@
         }
       }
     ]
-  },
-  "nubes_extra": []
+  }
 }

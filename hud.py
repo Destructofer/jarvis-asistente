@@ -242,6 +242,9 @@ def iniciar(cfg):
     global _cfg
     _cfg = cfg
     _ui(_crear)
+    if _s.get("reafirmando"):
+        return  # main() se reinicia si algo falla: un solo ciclo de "reafirmar" basta
+    _s["reafirmando"] = True
 
     def reafirmar(root):  # cada 3 s: vuelve a ponerse encima y al monitor correcto
         if _s["reactor"] is not None:

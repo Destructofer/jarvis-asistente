@@ -1,4 +1,22 @@
-import ctypes
+"""La voz de Jarvis.
+
+Todo lo que dice pasa por una Locucion: el texto se parte en frases, cada frase se genera en
+segundo plano (varias a la vez) y se reproduce en orden en cuanto está lista. Así:
+
+- Con el modelo en streaming (genesis.py), Jarvis empieza a hablar con la PRIMERA frase
+  mientras el modelo todavía escribe las siguientes.
+- Con ElevenLabs el audio llega en streaming (PCM): la frase empieza a sonar antes de que
+  termine de generarse.
+- Frases que se repiten (rellenos como "Claro.", narraciones ensayadas de la demo) se guardan
+  ya generadas en datos/voz_cache/ y suenan al instante.
+- detener() la corta a media frase (para interrumpirlo diciendo "Hey Jarvis").
+- Las locuciones se atienden por turno: un recordatorio nunca se encima con una respuesta.
+
+Motores, en orden (config.json → voz_motor = "auto"): ElevenLabs (si hay clave y voz) → voces
+neuronales de Edge (gratis, requieren internet) → Piper (local, voces/*.onnx) → voz de
+Windows. Si uno falla, esa frase se genera con el siguiente, y el que falló se salta un minuto.
+"""
+import hashlib
 import io
 import json
 import os
@@ -6,21 +24,41 @@ import queue
 import re
 import tempfile
 import threading
+import time
 import wave
 import winsound
+from collections import OrderedDict
 from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
 import numpy as np
-import pyttsx3
 
 VOCES_DIR = Path(__file__).parent / "voces"
-_cache = {}
-_candado = threading.Lock()
-_salidas = {}  # nombre pedido -> índice de sounddevice (se recalcula si falla)
-_CONF = {}     # config.json completo; lo pone genesis.py con configurar()
+CACHE_DIR = Path(__file__).parent / "datos" / "voz_cache"
+TASA = 24000                # todo se reproduce a 24 kHz, mono, int16
+TROZO = TASA // 10          # se escribe al altavoz en pedazos de 0.1 s (para poder cortar rápido)
+_piper = {}                 # ruta del modelo -> PiperVoice cargada
+_salidas = {}               # nombre pedido -> índice de sounddevice (se recalcula si falla)
+_CONF = {}                  # config.json completo; lo pone genesis.py con configurar()
+_caidos = {}                # motor -> momento hasta el que no se intenta (falló hace poco)
+_fallos = {}                # motor -> fallos seguidos (uno solo no basta para dejarlo de lado)
+_memoria = OrderedDict()    # clave -> pcm (las últimas frases generadas, para no repetir trabajo)
+_MAX_MEMORIA = 64
+_generando = threading.BoundedSemaphore(3)  # frases generándose a la vez
+# ElevenLabs limita las peticiones simultáneas por plan; pasarse daba error 429 y esa frase
+# salía con OTRA voz (el respaldo) a media respuesta.
+_eleven_sem = threading.BoundedSemaphore(2)
+
+HABLANDO = threading.Event()   # activo mientras suena una locución
+# detener() sube este contador: toda locución creada ANTES del corte se calla (incluidas las
+# que esperaban turno), las creadas después suenan normal. Con un simple Event, un corte que
+# llegaba justo cuando otra locución empezaba se perdía.
+_corte = {"gen": 0}
+
+# Turnos: cada locución toma un número al crearse y se reproduce cuando le toca. Con un
+# candado simple, un relleno ("Claro.") y la respuesta que va después podían sonar al revés.
+_turno_cond = threading.Condition()
+_turno = {"siguiente": 0, "atendiendo": 0}
 
 
 def configurar(cfg):
@@ -28,18 +66,41 @@ def configurar(cfg):
     _CONF = cfg or {}
 
 
+# ---------- Texto ----------
 def _limpiar(texto):
-    """Quita símbolos de markdown para que no los lea en voz alta."""
-    texto = re.sub(r"[*_#`>~]", "", texto)
+    """Quita símbolos de markdown y espacios raros para que no los lea en voz alta."""
+    texto = str(texto or "").replace(" ", " ").replace("\xa0", " ").replace("‑", "-")
+    texto = re.sub(r"[*_#`>~|]", "", texto)
     texto = re.sub(r"\s+", " ", texto)
     return texto.strip()
 
 
-# ---------- Elegir por dónde sale el audio ----------
+_FIN_FRASE = re.compile(r"(?<=[.!?…;:])\s+|\n+")
+
+
+def partir_frases(texto, minimo=40):
+    """Frases para generar y reproducir en cadena. Las muy cortas se juntan con la siguiente
+    para que la entonación sea natural."""
+    partes = [p for p in _FIN_FRASE.split(str(texto).strip()) if p and p.strip()]
+    frases, actual = [], ""
+    for p in partes:
+        actual = f"{actual} {p}".strip()
+        if len(actual) >= minimo:
+            frases.append(actual)
+            actual = ""
+    if actual:
+        if frases and len(actual) < minimo // 2:
+            frases[-1] += " " + actual
+        else:
+            frases.append(actual)
+    return frases or ([texto] if str(texto).strip() else [])
+
+
+# ---------- Por dónde sale el audio ----------
 # Con los lentes conectados a la PC, Windows suele mandar TODO el audio a los lentes. En modo
 # expositor queremos lo contrario: la voz de Jarvis por las bocinas/proyector para el público.
 # Por eso se puede elegir la salida por nombre ("Altavoces", "Realtek", "HDMI", "Ray-Ban"...).
-# Vacío = la salida predeterminada de Windows (el comportamiento original de Genesis).
+# Vacío = la salida predeterminada de Windows.
 def listar_salidas():
     import sounddevice as sd
     vistos, res = set(), []
@@ -78,134 +139,159 @@ def resolver_salida(nombre):
     return mejor
 
 
-def _reproducir_pcm(datos, rate, dispositivo):
-    import sounddevice as sd
-    try:
-        sd.play(datos, rate, device=dispositivo)
-        sd.wait()
-    except Exception as e:
-        # la salida pudo desconectarse (lentes apagados, HDMI quitado): se reintenta en la
-        # predeterminada en vez de quedarse mudo
-        print(f"[La salida de audio falló ({type(e).__name__}); uso la predeterminada]")
-        _salidas.clear()
-        sd.play(datos, rate)
-        sd.wait()
-
-
-def _reproducir_wav(ruta, dispositivo):
-    if dispositivo is None:
-        winsound.PlaySound(str(ruta), winsound.SND_FILENAME)
-        return
-    with wave.open(str(ruta), "rb") as w:
-        rate, canales, ancho = w.getframerate(), w.getnchannels(), w.getsampwidth()
-        crudo = w.readframes(w.getnframes())
-    tipo = {1: np.int8, 2: np.int16, 4: np.int32}[ancho]
-    datos = np.frombuffer(crudo, dtype=tipo).reshape(-1, canales)
-    _reproducir_pcm(datos, rate, dispositivo)
-
-
 def pitido(dispositivo_nombre="", frecuencia=880, ms=150):
     """El 'bip' de "te escucho", por la misma salida que la voz privada."""
     dispositivo = resolver_salida(dispositivo_nombre)
     if dispositivo is None:
         winsound.Beep(frecuencia, ms)
         return
+    import sounddevice as sd
     t = np.linspace(0, ms / 1000, int(22050 * ms / 1000), endpoint=False)
     onda = (0.25 * np.sin(2 * np.pi * frecuencia * t)).astype(np.float32)
     onda *= np.minimum(1, np.minimum(t, t[::-1]) * 60)  # sin chasquidos al inicio/fin
-    _reproducir_pcm(onda, 22050, dispositivo)
-
-
-# ---------- ElevenLabs (voz natural en la nube, opcional) ----------
-# Se activa poniendo ELEVENLABS_API_KEY y "elevenlabs_voz" (el ID de una voz de tu cuenta,
-# elevenlabs.io/app/voice-library) en config.json. Sin esos dos datos, ni lo intenta.
-# Añade 1-2 s de red por respuesta a cambio de sonar mucho más natural que Piper.
-def _reproducir_mp3(ruta):
-    """MP3 con el códec de Windows (winmm/MCI): nada de librerías nuevas ni ffmpeg."""
-    mci = ctypes.windll.winmm
-    alias = "genesis_voz_mp3"
-    mci.mciSendStringW(f'open "{ruta}" type mpegvideo alias {alias}', None, 0, None)
     try:
-        mci.mciSendStringW(f"play {alias} wait", None, 0, None)
-    finally:
-        mci.mciSendStringW(f"close {alias}", None, 0, None)
+        sd.play(onda, 22050, device=dispositivo)
+        sd.wait()
+    except Exception:
+        winsound.Beep(frecuencia, ms)
 
 
-def _mp3_a_pcm(ruta):
+# ---------- Conversión de audio ----------
+def _remuestrear(pcm, tasa):
+    """int16 mono a TASA (interpolación lineal: de sobra para voz)."""
+    pcm = np.asarray(pcm)
+    if pcm.ndim > 1:
+        pcm = pcm.mean(axis=1)
+    if tasa == TASA or len(pcm) == 0:
+        return pcm.astype(np.int16)
+    n = int(round(len(pcm) * TASA / tasa))
+    x = np.linspace(0, len(pcm) - 1, n)
+    return np.interp(x, np.arange(len(pcm)), pcm.astype(np.float32)).astype(np.int16)
+
+
+def _wav_a_pcm(fuente):
+    with wave.open(fuente, "rb") as w:
+        tasa, canales, ancho = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        crudo = w.readframes(w.getnframes())
+    tipo = {1: np.int8, 2: np.int16, 4: np.int32}[ancho]
+    datos = np.frombuffer(crudo, dtype=tipo).reshape(-1, canales)
+    if ancho == 4:
+        datos = (datos >> 16).astype(np.int16)
+    elif ancho == 1:
+        datos = (datos.astype(np.int16) - 128) << 8
+    return _remuestrear(datos, tasa)
+
+
+def _mp3_a_pcm(mp3):
     import av  # ya viene instalado con faster-whisper
-    fuente = io.BytesIO(ruta) if isinstance(ruta, (bytes, bytearray)) else str(ruta)
+    fuente = io.BytesIO(mp3) if isinstance(mp3, (bytes, bytearray)) else str(mp3)
     with av.open(fuente) as cont:
-        remuestreo = av.AudioResampler(format="s16", layout="mono", rate=24000)
+        remuestreo = av.AudioResampler(format="s16", layout="mono", rate=TASA)
         trozos = []
         for frame in cont.decode(audio=0):
             for f in remuestreo.resample(frame):
                 trozos.append(f.to_ndarray().reshape(-1))
-    return np.concatenate(trozos).astype(np.int16), 24000
+    return np.concatenate(trozos).astype(np.int16) if trozos else np.zeros(0, np.int16)
 
 
-def _eleven_pcm(frase, voice_id, clave):
-    """Una frase con ElevenLabs. Por defecto usa eleven_flash_v2_5: su modelo de latencia más
-    baja (~0.3 s), multilingüe; eleven_multilingual_v2 suena un poco mejor pero tarda más."""
-    conf = _CONF.get("elevenlabs", {}) or {}
-    payload = json.dumps({
+# ---------- Motores ----------
+def _conf_eleven():
+    return _CONF.get("elevenlabs", {}) or {}
+
+
+_ROTAS = ("ReadError", "RemoteProtocolError", "ConnectError", "WriteError", "LocalProtocolError")
+
+
+def _eleven_trozos(frase, voice_id, clave):
+    """ElevenLabs con reintentos cortos ANTES de que salga audio: si el plan rechaza por
+    demasiadas peticiones a la vez (429) o si la conexión reutilizada ya la había cerrado el
+    servidor. Una vez que empezó a sonar, no se reintenta (se repetiría el principio)."""
+    for intento in range(3):
+        dio_audio = False
+        try:
+            with _eleven_sem:
+                for trozo in _eleven_pedir(frase, voice_id, clave):
+                    dio_audio = True
+                    yield trozo
+            return
+        except Exception as e:
+            reintentable = ("HTTP 429" in str(e)) or type(e).__name__ in _ROTAS
+            if dio_audio or not reintentable or intento == 2:
+                raise
+            time.sleep(0.1 if type(e).__name__ in _ROTAS else 0.4 * (intento + 1))
+
+
+_http = {"cliente": None}
+_http_lock = threading.Lock()
+
+
+def _cliente_http():
+    """Conexión HTTP persistente con ElevenLabs: reutilizarla ahorra ~0.2 s por frase (medido:
+    primer audio 0.49 s con conexión nueva, 0.29 s reutilizada)."""
+    with _http_lock:
+        if _http["cliente"] is None:
+            import httpx
+            _http["cliente"] = httpx.Client(
+                timeout=httpx.Timeout(12.0, connect=5.0),
+                limits=httpx.Limits(max_connections=6, max_keepalive_connections=4,
+                                    keepalive_expiry=50))
+        return _http["cliente"]
+
+
+def _eleven_pedir(frase, voice_id, clave, con_idioma=True):
+    """ElevenLabs en streaming: va entregando PCM de 24 kHz conforme llega (la frase empieza
+    a sonar ~0.3 s después de pedirla, sin esperar el archivo completo)."""
+    conf = _conf_eleven()
+    cuerpo = {
         "text": frase,
         "model_id": conf.get("modelo", "eleven_flash_v2_5"),
-        "language_code": "es",
         "voice_settings": {"stability": conf.get("estabilidad", 0.45),
                            "similarity_boost": conf.get("similitud", 0.8),
                            "style": conf.get("estilo", 0.3), "use_speaker_boost": True,
                            "speed": conf.get("velocidad", 1.0)},
-    }).encode("utf-8")
-    req = Request(f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128",
-                  data=payload, headers={"xi-api-key": clave, "Content-Type": "application/json",
-                                        "Accept": "audio/mpeg"})
+    }
+    if con_idioma:
+        cuerpo["language_code"] = "es"
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream?output_format=pcm_24000"
+    with _cliente_http().stream("POST", url, json=cuerpo, headers={"xi-api-key": clave}) as r:
+        if r.status_code != 200:
+            detalle = r.read().decode("utf-8", "ignore")[:200]
+            if con_idioma and r.status_code in (400, 422) and "language" in detalle.lower():
+                yield from _eleven_pedir(frase, voice_id, clave, con_idioma=False)
+                return
+            raise RuntimeError(f"HTTP {r.status_code} {detalle}".strip())
+        resto = b""
+        for datos in r.iter_bytes(TROZO * 2):
+            if not datos:
+                continue
+            datos = resto + datos
+            n = len(datos) // 2 * 2
+            resto = datos[n:]
+            if n:
+                yield np.frombuffer(datos[:n], dtype="<i2").copy()
+
+
+def mantener_caliente():
+    """Petición mínima (gratis) para que la conexión con ElevenLabs siga abierta y la próxima
+    frase no pague el saludo TLS. La llama genesis.py cada ~40 s durante la exposición."""
+    clave = os.environ.get("ELEVENLABS_API_KEY", "")
+    if not (clave and _CONF.get("elevenlabs_voz") and _CONF.get("voz_motor", "auto") in ("auto", "elevenlabs")):
+        return
     try:
-        audio = urlopen(req, timeout=12).read()
-    except Exception as e:
-        detalle = ""
-        if hasattr(e, "read"):
-            try:
-                detalle = e.read().decode("utf-8", "ignore")[:200]
-            except Exception:
-                pass
-        raise RuntimeError(f"{e} {detalle}".strip()) from e
-    return _mp3_a_pcm(audio)
+        _cliente_http().get("https://api.elevenlabs.io/v1/models", headers={"xi-api-key": clave})
+    except Exception:
+        pass
 
 
-def _hablar_elevenlabs(texto, voice_id, clave, dispositivo):
-    _en_cadena(texto, lambda f: _eleven_pcm(f, voice_id, clave), dispositivo)
-
-# ---------- Voces neuronales de Microsoft Edge (gratis, muy naturales, requiere internet) ----------
-# Son las mismas voces de "Leer en voz alta" de Edge / Azure. Para escoger una:
-#   python diagnostico.py voces              -> lista las voces en español y multilingües
-#   python diagnostico.py voces es-MX-JorgeNeural   -> la escuchas
-# y la pones en config.json → "edge_voz".
-def _partir_frases(texto, minimo=40):
-    """Frases para ir generando y reproduciendo en cadena: mientras suena la primera ya se
-    está generando la segunda, así la respuesta empieza a sonar antes y sin pausas largas.
-    Las frases muy cortas se juntan con la siguiente para que la entonación sea natural."""
-    partes = re.split(r"(?<=[.!?¿¡…;:])\s+", texto.strip())
-    frases, actual = [], ""
-    for p in partes:
-        actual = f"{actual} {p}".strip()
-        if len(actual) >= minimo:
-            frases.append(actual)
-            actual = ""
-    if actual:
-        if frases and len(actual) < minimo // 2:
-            frases[-1] += " " + actual
-        else:
-            frases.append(actual)
-    return frases or [texto]
-
-
-def _edge_pcm(frase, voz, velocidad, tono):
+def _edge_pcm(frase):
     import asyncio
 
     import edge_tts
+    voz = _CONF.get("edge_voz", "es-MX-JorgeNeural")
 
     async def generar():
-        com = edge_tts.Communicate(frase, voz, rate=velocidad, pitch=tono,
+        com = edge_tts.Communicate(frase, voz, rate=_CONF.get("edge_velocidad", "+5%"),
+                                   pitch=_CONF.get("edge_tono", "+0Hz"),
                                    connect_timeout=6, receive_timeout=20)
         buf = bytearray()
         async for trozo in com.stream():
@@ -219,86 +305,38 @@ def _edge_pcm(frase, voz, velocidad, tono):
     return _mp3_a_pcm(mp3)
 
 
-def _en_cadena(texto, generar, dispositivo):
-    """Genera frase por frase en un hilo y va reproduciendo: la primera frase suena en cuanto
-    está lista mientras se preparan las siguientes (sirve para Edge y para ElevenLabs)."""
-    frases = _partir_frases(texto)
-    cola = queue.Queue(maxsize=3)
-
-    def producir():
-        for f in frases:
-            try:
-                cola.put(generar(f))
-            except Exception as e:
-                cola.put(e)
-                return
-        cola.put(None)
-
-    threading.Thread(target=producir, daemon=True, name="voz-cadena").start()
-    sono_algo = False
-    while True:
-        try:
-            item = cola.get(timeout=15)
-        except queue.Empty:
-            item = TimeoutError("la voz en línea tardó demasiado")
-        if item is None:
-            return
-        if isinstance(item, Exception):
-            if not sono_algo:
-                raise item  # nada sonó todavía: hablar() prueba el siguiente motor
-            print(f"[La voz en línea se cortó: {type(item).__name__}]")
-            return
-        datos, rate = item
-        _reproducir_pcm(datos, rate, dispositivo)
-        sono_algo = True
+def _modelo_piper():
+    nombre = _CONF.get("voz_nombre", "")
+    ruta = VOCES_DIR / f"{nombre}.onnx"
+    return ruta if nombre and ruta.exists() else None
 
 
-def _hablar_edge(texto, dispositivo):
-    voz = _CONF.get("edge_voz", "es-MX-JorgeNeural")
-    velocidad = _CONF.get("edge_velocidad", "+5%")
-    tono = _CONF.get("edge_tono", "+0Hz")
-    _en_cadena(texto, lambda f: _edge_pcm(f, voz, velocidad, tono), dispositivo)
-
-# ---------- Piper (voz local, la más natural sin depender de la nube) ----------
-def _hablar_piper(texto, modelo, dispositivo):
+def _piper_pcm(frase):
     from piper import PiperVoice
-
-    if modelo not in _cache:
-        _cache[modelo] = PiperVoice.load(str(modelo))
-    voice = _cache[modelo]
-
-    wav_path = Path(tempfile.gettempdir()) / "genesis_voz.wav"
-    with wave.open(str(wav_path), "wb") as wav:
+    ruta = _modelo_piper()
+    if ruta is None:
+        raise RuntimeError("no hay modelo de Piper")
+    if ruta not in _piper:
+        _piper[ruta] = PiperVoice.load(str(ruta))
+    voice = _piper[ruta]
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
         if hasattr(voice, "synthesize_wav"):
-            voice.synthesize_wav(texto, wav)
+            voice.synthesize_wav(frase, w)
         else:  # versiones antiguas de piper
-            voice.synthesize(texto, wav)
-    _reproducir_wav(wav_path, dispositivo)
+            voice.synthesize(frase, w)
+    buf.seek(0)
+    return _wav_a_pcm(buf)
 
 
-# ---------- Voz de Windows (último respaldo) ----------
-def _elegir_voz(engine, preferida=""):
-    voces = engine.getProperty("voices")
-    if preferida:
-        for v in voces:
-            if preferida.lower() in v.name.lower():
-                return v.id
-    for v in voces:
-        if "spanish" in v.name.lower() or "es-" in v.id.lower():
-            return v.id
-    return None
-
-
-def _hablar_sapi(texto, velocidad, voz, dispositivo):
-    """Voz de Windows directo por SAPI (COM). Más confiable que pyttsx3, que con Python 3.13
-    a veces termina sin error pero sin sonar."""
+def _sapi_pcm(frase):
+    """Voz de Windows directo por SAPI (COM), a un WAV temporal."""
     import pythoncom
     import win32com.client
     pythoncom.CoInitialize()
     sp = win32com.client.Dispatch("SAPI.SpVoice")
     voces = sp.GetVoices()
-    elegida = None
-    preferida = (voz or "").lower()
+    elegida, preferida = None, (_CONF.get("voz_nombre") or "").lower()
     for i in range(voces.Count):
         desc = voces.Item(i).GetDescription().lower()
         if preferida and preferida in desc:
@@ -310,86 +348,421 @@ def _hablar_sapi(texto, velocidad, voz, dispositivo):
     if elegida is not None:
         sp.Voice = elegida
     # pyttsx3 usa palabras por minuto (~180 normal); SAPI usa -10..10 (0 normal)
-    sp.Rate = max(-10, min(10, round((int(velocidad) - 180) / 20)))
-    if dispositivo is None:
-        sp.Speak(texto)  # síncrono: regresa cuando termina de hablar
-        return
-    ruta = Path(tempfile.gettempdir()) / "genesis_voz_sapi.wav"
-    stream = win32com.client.Dispatch("SAPI.SpFileStream")
-    stream.Format.Type = 22  # SAFT22kHz16BitMono
-    stream.Open(str(ruta), 3)  # SSFMCreateForWrite
-    sp.AudioOutputStream = stream
-    sp.Speak(texto)
-    stream.Close()
-    _reproducir_wav(ruta, dispositivo)
-
-
-def _hablar_windows(texto, velocidad, voz, dispositivo):
+    sp.Rate = max(-10, min(10, round((int(_CONF.get("voz_velocidad", 180)) - 180) / 20)))
+    fd, ruta = tempfile.mkstemp(suffix=".wav", prefix="jarvis_sapi_")
+    os.close(fd)
     try:
-        _hablar_sapi(texto, velocidad, voz, dispositivo)
-        return
-    except Exception as e:
-        print(f"[La voz de Windows (SAPI) falló: {type(e).__name__}: {str(e)[:120]}; pruebo pyttsx3]")
-    engine = pyttsx3.init()
-    engine.setProperty("rate", velocidad)
-    voz_id = _elegir_voz(engine, voz)
-    if voz_id:
-        engine.setProperty("voice", voz_id)
-    if dispositivo is None:
-        engine.say(texto)
-        engine.runAndWait()
-        return
-    ruta = Path(tempfile.gettempdir()) / "genesis_voz_win.wav"
-    engine.save_to_file(texto, str(ruta))
-    engine.runAndWait()
-    _reproducir_wav(ruta, dispositivo)
+        stream = win32com.client.Dispatch("SAPI.SpFileStream")
+        stream.Format.Type = 22  # SAFT22kHz16BitMono
+        stream.Open(ruta, 3)  # SSFMCreateForWrite
+        sp.AudioOutputStream = stream
+        sp.Speak(frase)
+        stream.Close()
+        return _wav_a_pcm(ruta)
+    finally:
+        try:
+            os.remove(ruta)
+        except OSError:
+            pass
 
 
-def hablar(texto, velocidad=180, voz="", voz_natural="", salida=""):
-    """voz_natural: ID de voz de ElevenLabs (config.json → elevenlabs_voz). Vacío = no usarla.
-    salida: nombre (aproximado) de la salida de audio; vacío = la predeterminada de Windows."""
+def _todos_los_motores(voz_natural, forzado=None):
+    """Motores en orden de preferencia según config.json (sin mirar cuáles fallaron)."""
+    if forzado:
+        return [forzado]
+    motor = _CONF.get("voz_motor", "auto")
+    clave = os.environ.get("ELEVENLABS_API_KEY", "")
+    lista = []
+    if voz_natural and clave and motor in ("auto", "elevenlabs"):
+        lista.append("elevenlabs")
+    if motor in ("auto", "edge", "elevenlabs"):
+        lista.append("edge")
+    if motor != "windows" and _modelo_piper() is not None:
+        lista.append("piper")
+    lista.append("windows")
+    return lista
+
+
+def _motores(voz_natural, forzado=None):
+    """Motores a probar para esta frase: los preferidos, sin los que fallaron hace poco."""
+    lista = _todos_los_motores(voz_natural, forzado)
+    if forzado:
+        return lista
+    ahora = time.time()
+    vivos = [m for m in lista if _caidos.get(m, 0) < ahora]
+    return vivos or ["windows"]
+
+
+def _clave_cache(frase, voz_natural, forzado=None):
+    """Identifica una frase generada con la voz PREFERIDA actual. Si se guardara lo que generó
+    un respaldo, al volver ElevenLabs sonarían dos voces distintas en la misma demo."""
+    motor = _todos_los_motores(voz_natural, forzado)[0]
+    ajustes = {"elevenlabs": [voz_natural, _conf_eleven()],
+               "edge": [_CONF.get("edge_voz"), _CONF.get("edge_velocidad"), _CONF.get("edge_tono")]
+               }.get(motor, [_CONF.get("voz_nombre"), _CONF.get("voz_velocidad")])
+    base = json.dumps([motor, ajustes, frase], ensure_ascii=False, sort_keys=True, default=str)
+    return motor, hashlib.sha1(base.encode("utf-8")).hexdigest()
+
+
+def _leer_cache(clave):
+    if clave in _memoria:
+        _memoria.move_to_end(clave)
+        return _memoria[clave]
+    ruta = CACHE_DIR / f"{clave}.wav"
+    if ruta.exists():
+        try:
+            pcm = _wav_a_pcm(str(ruta))
+            _recordar(clave, pcm)
+            return pcm
+        except Exception:
+            return None
+    return None
+
+
+def _recordar(clave, pcm):
+    _memoria[clave] = pcm
+    _memoria.move_to_end(clave)
+    while len(_memoria) > _MAX_MEMORIA:
+        _memoria.popitem(last=False)
+
+
+def _guardar_disco(clave, pcm):
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CACHE_DIR / f"{clave}.tmp"
+        with wave.open(str(tmp), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(TASA)
+            w.writeframes(np.asarray(pcm, np.int16).tobytes())
+        os.replace(tmp, CACHE_DIR / f"{clave}.wav")
+    except OSError as e:
+        print(f"[No pude guardar la voz en caché: {e}]")
+
+
+class _Clip:
+    """El audio de una frase, que se va llenando en segundo plano (a pedazos si el motor hace
+    streaming, de golpe si no)."""
+
+    def __init__(self, frase):
+        self.frase = frase
+        self._q = queue.Queue()
+        self.error = None
+        self.t_creado = time.time()
+        self.t_primer_audio = None   # cuándo llegó el primer pedazo generado (para medir)
+        self.motor = ""
+
+    def poner(self, pcm):
+        if len(pcm):
+            if self.t_primer_audio is None:
+                self.t_primer_audio = time.time()
+            self._q.put(pcm)
+
+    def terminar(self, error=None):
+        self.error = error
+        self._q.put(None)
+
+    def trozos(self, limite=20.0):
+        while True:
+            try:
+                pcm = self._q.get(timeout=limite)
+            except queue.Empty:
+                self.error = TimeoutError("la voz tardó demasiado")
+                return
+            if pcm is None:
+                return
+            yield pcm
+
+
+def _generar(clip, voz_natural, guardar=False, forzado=None):
+    """Llena el clip: caché → motores en orden. Si un motor falla ANTES de dar audio se prueba
+    el siguiente; si falla a media frase (streaming), la frase se corta ahí."""
+    motor_pref, clave = _clave_cache(clip.frase, voz_natural, forzado)
+    pcm = _leer_cache(clave)
+    if pcm is not None:
+        clip.motor = "caché"
+        clip.poner(pcm)
+        clip.terminar()
+        return
+    with _generando:
+        for motor in _motores(voz_natural, forzado):
+            dio_audio = False
+            clip.motor = motor
+            try:
+                if motor == "elevenlabs":
+                    partes = []
+                    for trozo in _eleven_trozos(clip.frase, voz_natural,
+                                                os.environ.get("ELEVENLABS_API_KEY", "")):
+                        dio_audio = True
+                        partes.append(trozo)
+                        clip.poner(trozo)
+                    if not partes:
+                        raise RuntimeError("ElevenLabs no devolvió audio")
+                    pcm = np.concatenate(partes)
+                else:
+                    pcm = {"edge": _edge_pcm, "piper": _piper_pcm, "windows": _sapi_pcm}[motor](clip.frase)
+                    clip.poner(pcm)
+                if motor == motor_pref:
+                    _recordar(clave, pcm)
+                    if guardar:
+                        _guardar_disco(clave, pcm)
+                _fallos[motor] = 0
+                clip.terminar()
+                return
+            except Exception as e:
+                print(f"[Voz: {motor} falló ({type(e).__name__}: {str(e)[:120]})"
+                      + ("" if dio_audio else "; pruebo el siguiente") + "]")
+                # Un fallo suelto (un corte de red de un segundo) no debe mandar el resto de la
+                # exposición a la voz de respaldo, que además es más lenta: se aparta el motor
+                # solo tras dos fallos seguidos, y por 30 s.
+                _fallos[motor] = _fallos.get(motor, 0) + 1
+                if motor != "windows" and _fallos[motor] >= 2:
+                    _caidos[motor] = time.time() + 30
+                if dio_audio:
+                    clip.terminar(e)
+                    return
+    clip.terminar(RuntimeError("ningún motor de voz respondió"))
+
+
+# ---------- Locución ----------
+class Locucion:
+    """Una intervención de Jarvis. Se le puede ir agregando texto (streaming del modelo) y
+    suena frase por frase, en orden, por la salida elegida.
+
+        loc = Locucion(salida="Realtek", al_frase=hud.subtitulo)
+        loc.agregar("Claro. "); loc.agregar("Esto es...")
+        loc.cerrar(); loc.esperar()
+
+    filtro(frase) -> bool: si devuelve False (p. ej. la frase trae caracteres chinos), la
+    locución se cancela sin decir esa frase y queda rechazada=True."""
+
+    def __init__(self, salida="", voz_natural=None, al_frase=None, al_empezar=None,
+                 filtro=None, guardar=False, motor=None, primera_min=12, resto_min=40,
+                 dispositivo=None):
+        self._gen = _corte["gen"]
+        self.dispositivo = dispositivo if dispositivo is not None else resolver_salida(salida)
+        self.voz_natural = _CONF.get("elevenlabs_voz", "") if voz_natural is None else voz_natural
+        self.al_frase, self.al_empezar, self.filtro = al_frase, al_empezar, filtro
+        self.guardar, self.motor = guardar, motor
+        self.primera_min, self.resto_min = primera_min, resto_min
+        self.dijo_algo = False
+        self.rechazada = False
+        self.cancelada = False
+        self.t_primer_audio = None
+        self.t_primera_frase = None   # cuándo se tuvo la primera frase completa (para medir)
+        self.primer_clip = None
+        self.texto_dicho = []
+        self._pendiente = ""
+        self._frases_encoladas = 0
+        self._clips = queue.Queue()
+        self._cerrada = False
+        with _turno_cond:
+            self._ticket = _turno["siguiente"]
+            _turno["siguiente"] += 1
+        self._hilo = threading.Thread(target=self._reproducir, daemon=True, name="voz")
+        self._hilo.start()
+
+    # --- texto que entra ---
+    def agregar(self, fragmento):
+        if self._cerrada or self.cancelada:
+            return
+        self._pendiente += str(fragmento)
+        while True:
+            m = _FIN_FRASE.search(self._pendiente)
+            if not m:
+                break
+            candidata = self._pendiente[:m.start() + 1].strip()
+            minimo = self.primera_min if self._frases_encoladas == 0 else self.resto_min
+            if len(candidata) < minimo:
+                # muy corta para sonar natural: se espera a juntarla con la siguiente, salvo
+                # que ya no quede nada más por buscar en el buffer
+                siguiente = _FIN_FRASE.search(self._pendiente, m.end())
+                if not siguiente:
+                    break
+                candidata = self._pendiente[:siguiente.start() + 1].strip()
+                self._pendiente = self._pendiente[siguiente.end():]
+            else:
+                self._pendiente = self._pendiente[m.end():]
+            self._encolar(candidata)
+
+    def cerrar(self):
+        if self._cerrada:
+            return
+        if self._pendiente.strip() and not self.cancelada:
+            self._encolar(self._pendiente.strip())
+        self._pendiente = ""
+        self._cerrada = True
+        self._clips.put(None)
+
+    def _encolar(self, frase):
+        frase = _limpiar(frase)
+        if not frase or self.cancelada:
+            return
+        if self.filtro is not None and not self.filtro(frase):
+            self.rechazada = True
+            self.cancelar()
+            return
+        self._frases_encoladas += 1
+        clip = _Clip(frase)
+        if self.primer_clip is None:
+            self.primer_clip = clip
+            self.t_primera_frase = clip.t_creado
+        self._clips.put(clip)
+        threading.Thread(target=_generar, args=(clip, self.voz_natural, self.guardar, self.motor),
+                         daemon=True, name="voz-generar").start()
+
+    # --- control ---
+    def cancelar(self):
+        self.cancelada = True
+        if not self._cerrada:
+            self._cerrada = True
+            self._clips.put(None)
+
+    def esperar(self, limite=None):
+        self._hilo.join(limite)
+        return not self._hilo.is_alive()
+
+    @property
+    def terminada(self):
+        return not self._hilo.is_alive()
+
+    def _cortada(self):
+        return self.cancelada or _corte["gen"] != self._gen
+
+    # --- reproducción (hilo propio) ---
+    def _esperar_turno(self):
+        with _turno_cond:
+            while _turno["atendiendo"] != self._ticket:
+                _turno_cond.wait(0.5)
+
+    def _soltar_turno(self):
+        with _turno_cond:
+            _turno["atendiendo"] = self._ticket + 1
+            _turno_cond.notify_all()
+
+    def _abrir(self, dispositivo):
+        import sounddevice as sd
+        s = sd.OutputStream(samplerate=TASA, channels=1, dtype="int16", device=dispositivo,
+                            latency="low")
+        s.start()
+        return s
+
+    def _reproducir(self):
+        self._esperar_turno()
+        stream = None
+        try:
+            while True:
+                try:
+                    # Red de seguridad: una locución que nadie cierra no debe tener tomado el
+                    # turno para siempre (callaría a Jarvis el resto de la sesión).
+                    clip = self._clips.get(timeout=45)
+                except queue.Empty:
+                    print("[Una locución quedó abierta sin texto; la cierro]")
+                    break
+                if clip is None or self._cortada():
+                    break
+                empezo = False
+                for pcm in clip.trozos():
+                    if self._cortada():
+                        break
+                    if stream is None:
+                        try:
+                            stream = self._abrir(self.dispositivo)
+                        except Exception as e:
+                            # la salida pudo desconectarse (lentes apagados, HDMI quitado): se
+                            # usa la predeterminada en vez de quedarse mudo
+                            print(f"[La salida de audio falló ({type(e).__name__}); uso la predeterminada]")
+                            _salidas.clear()
+                            stream = self._abrir(None)
+                    if not empezo:
+                        empezo = True
+                        self.texto_dicho.append(clip.frase)
+                        if self.t_primer_audio is None:
+                            self.t_primer_audio = time.time()
+                            HABLANDO.set()
+                            if self.al_empezar:
+                                self._llamar(self.al_empezar)
+                        if self.al_frase:
+                            self._llamar(self.al_frase, clip.frase)
+                    for i in range(0, len(pcm), TROZO):
+                        if self._cortada():
+                            break
+                        stream.write(pcm[i:i + TROZO].reshape(-1, 1))
+                    self.dijo_algo = True
+                if clip.error and not empezo:
+                    print(f"[No pude decir: '{clip.frase[:60]}' ({clip.error})]")
+        except Exception as e:
+            print(f"[Error de audio: {type(e).__name__}: {str(e)[:150]}]")
+        finally:
+            if stream is not None:
+                try:
+                    if self._cortada():
+                        stream.abort()
+                    else:
+                        stream.stop()   # espera a que termine de sonar lo que ya se escribió
+                    stream.close()
+                except Exception:
+                    pass
+            HABLANDO.clear()
+            self._soltar_turno()
+
+    @staticmethod
+    def _llamar(fn, *args):
+        try:
+            fn(*args)
+        except Exception as e:
+            print(f"[Error en aviso de voz: {e}]")
+
+
+def detener():
+    """Corta lo que esté diciendo Jarvis y todo lo que esperaba turno para hablar (se usa al
+    interrumpirlo con "Hey Jarvis"). Lo que se pida decir después suena normal."""
+    _corte["gen"] += 1
+
+
+def hablar(texto, velocidad=180, voz="", voz_natural="", salida="", al_frase=None, motor=None):
+    """Dice un texto completo y regresa cuando terminó (compatibilidad con el código viejo).
+    velocidad y voz se leen ahora de config.json (voz_velocidad, voz_nombre)."""
     texto = _limpiar(texto)
     if not texto:
-        return
+        return None
+    loc = Locucion(salida=salida, voz_natural=voz_natural, al_frase=al_frase, motor=motor)
+    loc.agregar(texto)
+    loc.cerrar()
+    loc.esperar()
+    return loc
 
-    # Los avisos hablan desde otro hilo: el candado evita que se pisen con la respuesta
-    with _candado:
-        dispositivo = resolver_salida(salida)
-        # voz_motor: "auto" (ElevenLabs si está configurado, si no Edge, si no Piper, si no
-        # Windows), o fijo: "elevenlabs", "edge", "piper", "windows"
-        motor = _CONF.get("voz_motor", "auto")
-        clave = os.environ.get("ELEVENLABS_API_KEY", "")
-        destino = f"salida {dispositivo}" if dispositivo is not None else "salida predeterminada de Windows"
-        if voz_natural and clave and motor in ("auto", "elevenlabs"):
-            try:
-                print(f"[Voz: ElevenLabs {voz_natural[:8]}… → {destino}]")
-                _hablar_elevenlabs(texto, voz_natural, clave, dispositivo)
-                return
-            except Exception as e:
-                print(f"[ElevenLabs falló ({type(e).__name__}: {str(e)[:160]}); uso Edge]")
-        if motor in ("auto", "edge"):
-            try:
-                print(f"[Voz: Edge {_CONF.get('edge_voz', 'es-MX-JorgeNeural')} → {destino}]")
-                _hablar_edge(texto, dispositivo)
-                return
-            except Exception as e:
-                print(f"[La voz en línea (Edge) falló: {type(e).__name__}: {str(e)[:120]}; uso Piper]")
-        if motor == "windows":
-            voz = ""  # fuerza a saltar Piper
 
-        modelo = VOCES_DIR / f"{voz}.onnx"
-        if voz and modelo.exists() and motor != "windows":
-            try:
-                print(f"[Voz: Piper → {destino}]")
-                _hablar_piper(texto, modelo, dispositivo)
-                return
-            except Exception as e:
-                print(f"[Piper falló, uso voz de Windows: {e}]")
+def en_cache(frase, voz_natural=None):
+    """True si la frase ya está generada con la voz actual (suena al instante)."""
+    vn = _CONF.get("elevenlabs_voz", "") if voz_natural is None else voz_natural
+    return _leer_cache(_clave_cache(_limpiar(frase), vn)[1]) is not None
 
-        try:
-            _hablar_windows(texto, velocidad, voz, dispositivo)
-        except Exception as e:
-            print(f"[No pude hablar: {type(e).__name__}: {str(e)[:150]}]")
+
+def precalentar(frases, voz_natural=None):
+    """Genera y guarda en disco las frases (rellenos, narraciones ensayadas) para que luego
+    suenen al instante. Se llama en segundo plano; no reproduce nada."""
+    vn = _CONF.get("elevenlabs_voz", "") if voz_natural is None else voz_natural
+    hechas = 0
+    for frase in frases:
+        frase = _limpiar(frase)
+        if not frase or en_cache(frase, vn):
+            continue
+        clip = _Clip(frase)
+        _generar(clip, vn, guardar=True)
+        for _ in clip.trozos():
+            pass
+        hechas += clip.error is None
+    return hechas
+
+
+# ---------- Compatibilidad (diagnostico.py) ----------
+def _hablar_edge(texto, dispositivo=None):
+    """Dice un texto con la voz de Edge configurada (diagnostico.py voces)."""
+    loc = Locucion(motor="edge", dispositivo=dispositivo)
+    loc.agregar(texto)
+    loc.cerrar()
+    loc.esperar()
 
 
 if __name__ == "__main__":
@@ -399,7 +772,4 @@ if __name__ == "__main__":
         configurar(json.loads((Path(__file__).parent / "config.json").read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError):
         pass
-    hablar(
-        "Hola, soy Jarvis. Sistema de voz en línea.",
-        voz="es_MX-claude-high",
-    )
+    hablar("Hola, soy Jarvis. Sistema de voz en línea.")

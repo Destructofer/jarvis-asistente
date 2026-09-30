@@ -14,7 +14,7 @@ from pywinauto import Desktop
 
 import memoria
 import skills
-from skills import _norm, skill
+from skills import Fallo, _norm, skill
 
 INDICE_PATH = Path(__file__).parent / "datos" / "apps.json"
 UMBRAL_SEGURO = 0.6   # a partir de aquí se abre sin más comentario
@@ -318,33 +318,89 @@ def _nombre_pid(pid):
 
 
 def _procesos_cerrables():
-    """nombre (sin .exe) -> pid, de lo que corre y no está en BLOQUEADAS."""
+    """nombre (sin .exe) -> [pids], de lo que corre y no está en BLOQUEADAS. Se guardan TODOS
+    los procesos de cada app: el navegador, Teams o Spotify abren varios, y quedarse con el
+    primero que aparecía podía cerrar un proceso hijo cualquiera en vez de la app."""
     resultado = {}
     for p in psutil.process_iter(["pid", "name"]):
         try:
             nombre = p.info["name"] or ""
             base = Path(nombre).stem
             if base and not bloqueado(nombre):
-                resultado.setdefault(base, p.info["pid"])
+                resultado.setdefault(base, []).append(p.info["pid"])
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return resultado
 
 
-def _terminar_pid(pid, forzar):
+def _ventanas_de(pids):
+    """hwnds visibles de nivel superior que pertenecen a esos procesos."""
     try:
-        proc = psutil.Process(pid)
-        if bloqueado(proc.name()):
-            return False
-        proc.terminate()
+        import win32gui
+        import win32process
+    except ImportError:
+        return []
+    pids, hwnds = set(pids), []
+
+    def cada(h, _):
         try:
-            proc.wait(timeout=3)
-        except psutil.TimeoutExpired:
-            if forzar:
-                proc.kill()
+            if win32gui.IsWindowVisible(h) and win32gui.GetWindowText(h).strip() \
+                    and win32process.GetWindowThreadProcessId(h)[1] in pids:
+                hwnds.append(h)
+        except Exception:
+            pass
         return True
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    try:
+        win32gui.EnumWindows(cada, None)
+    except Exception:
+        pass
+    return hwnds
+
+
+def _cerrar_con_la_x(pids, espera=4.0):
+    """Pide a las ventanas de esos procesos que se cierren (como darle a la X: la app puede
+    preguntar si guardar). True si ya no queda ninguna ventana suya."""
+    try:
+        import win32con
+        import win32gui
+    except ImportError:
         return False
+    hwnds = _ventanas_de(pids)
+    if not hwnds:
+        return False
+    for h in hwnds:
+        try:
+            win32gui.PostMessage(h, win32con.WM_CLOSE, 0, 0)
+        except Exception:
+            pass
+    fin = time.time() + espera
+    while time.time() < fin:
+        time.sleep(0.3)
+        if not _ventanas_de(pids):
+            return True
+    return False
+
+
+def _terminar_pids(pids):
+    """Termina los procesos a la fuerza. OJO: en Windows psutil.terminate() ES un cierre
+    forzado (TerminateProcess), no un "por favor ciérrate": lo no guardado se pierde. Por eso
+    solo se llama tras confirmar."""
+    ok = False
+    for pid in pids:
+        try:
+            proc = psutil.Process(pid)
+            if bloqueado(proc.name()):
+                continue
+            proc.kill()
+            ok = True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return ok
+
+
+def _terminar_pid(pid, forzar):
+    """Compatibilidad: cierre forzado de un solo proceso (solo si forzar=True)."""
+    return _terminar_pids([pid]) if forzar else False
 
 
 @skill("cerrar_app",
@@ -358,9 +414,9 @@ def _terminar_pid(pid, forzar):
 def cerrar_app(nombre, forzar=False):
     if forzar:  # terminar a la fuerza puede perder trabajo sin guardar: siempre se confirma
         if memoria.pedir_confirmacion is None:
-            return "Forzar el cierre necesita confirmación y no puedo pedirla ahora."
+            return Fallo("Forzar el cierre necesita confirmación y no puedo pedirla ahora.")
         if not memoria.pedir_confirmacion(f"¿Fuerzo el cierre de {nombre}? Se puede perder lo que no esté guardado."):
-            return "El usuario canceló. No cerré nada."
+            return Fallo("El usuario canceló. No cerré nada.")
 
     ventanas = _ventanas_visibles()
     candidatas = sorted(((puntaje(nombre, t), t, w) for t, w in ventanas.items()), reverse=True)
@@ -375,7 +431,7 @@ def cerrar_app(nombre, forzar=False):
             # Una carpeta del Explorador sí se puede cerrar (como con la X); el resto de
             # ventanas del sistema (barra de tareas, escritorio) o de Genesis, nunca.
             if clase != "CabinetWClass" or forzar:
-                return f"'{titulo}' es parte del sistema o del asistente; no la cierro."
+                return Fallo(f"'{titulo}' es parte del sistema o del asistente; no la cierro.")
         try:
             if not forzar:
                 w.close()
@@ -387,19 +443,29 @@ def cerrar_app(nombre, forzar=False):
             time.sleep(0.3)
             if titulo not in _ventanas_visibles():
                 return f"Cerré {titulo}."
-        if forzar and pid and _terminar_pid(pid, forzar=True):
+        if forzar and pid and _terminar_pids([pid]):
             return f"Forcé el cierre de {titulo}."
-        return (f"'{titulo}' no se cerró todavía; puede estar preguntando si guardar "
-                "cambios, o dime que la fuerce.")
+        return Fallo(f"'{titulo}' no se cerró todavía; puede estar preguntando si guardar "
+                     "cambios, o dime que la fuerce.")
 
     procesos = _procesos_cerrables()
-    candidatos = sorted(((puntaje(nombre, n), n, pid) for n, pid in procesos.items()), reverse=True)
+    candidatos = sorted(((puntaje(nombre, n), n, pids) for n, pids in procesos.items()),
+                        key=lambda c: c[0], reverse=True)
     if candidatos and candidatos[0][0] >= UMBRAL_INTENTO:
-        _, n, pid = candidatos[0]
-        if _terminar_pid(pid, forzar):
+        _, n, pids = candidatos[0]
+        # Primero como con la X, aunque no se haya encontrado por el título de la ventana
+        if not forzar and _cerrar_con_la_x(pids):
             return f"Cerré {n}."
-        return f"No pude cerrar '{n}'."
-    return f"No encontré ninguna app o ventana abierta parecida a '{nombre}'."
+        if not forzar:
+            # Sin ventanas que cerrar (o no quisieron cerrarse): matar el proceso pierde lo
+            # no guardado, así que se pregunta antes, igual que cuando se pide forzar.
+            if memoria.pedir_confirmacion is None or not memoria.pedir_confirmacion(
+                    f"{n} no se cierra por las buenas. ¿Lo cierro a la fuerza? Se perdería lo no guardado."):
+                return Fallo(f"No cerré {n}.")
+        if _terminar_pids(pids):
+            return f"Cerré {n}."
+        return Fallo(f"No pude cerrar '{n}'.")
+    return Fallo(f"No encontré ninguna app o ventana abierta parecida a '{nombre}'.")
 
 
 # ---------- Skill ----------
@@ -408,20 +474,35 @@ def cerrar_app(nombre, forzar=False):
        "nombre sea aproximado (whatsapp, spotify, word, excel, opera, discord, calculadora...). "
        "Pásale el nombre tal como lo dijo el usuario.",
        {"nombre": {"type": "string", "description": "Nombre de la aplicación"}})
+def _destino_real(destino):
+    """Para un acceso directo (.lnk), el programa al que apunta; si no, el mismo destino. Así
+    un acceso directo a PowerShell del menú Inicio también pide confirmación."""
+    if not destino.lower().endswith(".lnk"):
+        return destino
+    try:
+        import pythoncom
+        import win32com.client
+        pythoncom.CoInitialize()
+        return win32com.client.Dispatch("WScript.Shell").CreateShortcut(destino).TargetPath or destino
+    except Exception:
+        return destino
+
+
 def abrir_app(nombre):
     mejor = buscar_app(nombre)
     if mejor is None and not _indice:
         reindexar()
         mejor = buscar_app(nombre)
     if mejor is None:
-        return f"No encontré ninguna app parecida a '{nombre}'."
+        return Fallo(f"No encontré ninguna app parecida a '{nombre}'.")
     n, destino, p = mejor
 
-    if any(destino.lower().endswith(r) or destino.lower().startswith(r) for r in RIESGOSAS):
+    real = _destino_real(os.path.expandvars(destino)).lower()
+    if any(d.endswith(r) or d.startswith(r) for d in (destino.lower(), real) for r in RIESGOSAS):
         if memoria.pedir_confirmacion is None:
-            return "Esa abre una terminal o los ajustes del sistema y no puedo pedir confirmación ahora, así que no la abrí."
+            return Fallo("Esa abre una terminal o los ajustes del sistema y no puedo pedir confirmación ahora, así que no la abrí.")
         if not memoria.pedir_confirmacion(f"¿Confirmas que abra {n}?"):
-            return "El usuario canceló. No abrí nada."
+            return Fallo("El usuario canceló. No abrí nada.")
 
     os.startfile(os.path.expandvars(destino))
     return f"Abriendo {n}." if p >= UMBRAL_SEGURO else f"Abriendo lo más parecido a '{nombre}': {n}."

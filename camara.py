@@ -176,7 +176,13 @@ def _capturar_ventana(titulo):
         mfc.DeleteDC()
         win32gui.ReleaseDC(h, hdc)
     if _casi_negra(img):
-        # Algunas apps no se dejan dibujar así: último intento, copiar de la pantalla
+        # Algunas apps no se dejan dibujar así. Último intento: copiar de la pantalla, pero SOLO
+        # si la ventana está al frente; si no, lo que hay en ese rectángulo es otra cosa (la
+        # presentación a pantalla completa) y Jarvis "vería" la diapositiva creyendo que es la
+        # vista de los lentes.
+        if win32gui.GetForegroundWindow() != h:
+            raise CamaraError(f"La ventana '{t}' sale en negro cuando está detrás de otra. Usa OBS "
+                              "con su cámara virtual (fuente 'webcam'), que sí la captura tapada.")
         from PIL import ImageGrab
         img = ImageGrab.grab(bbox=(x0, y0, x1, y1), all_screens=True)
         if _casi_negra(img):
@@ -195,6 +201,12 @@ def iniciar_servidor(cfg):
     c = _conf(cfg)
     puerto = int(c.get("http_puerto", 8765))
     token = str(c.get("http_token", ""))
+    # Sin token, el receptor solo acepta fotos de ESTA computadora: en el Wi-Fi de un evento
+    # cualquiera podría mandarle imágenes a Jarvis (y hacerle "ver" lo que quiera).
+    host = "0.0.0.0" if token else "127.0.0.1"
+    if not token:
+        print("[Cámara HTTP: sin camara.http_token solo acepto imágenes de esta misma PC. "
+              "Pon un token en config.json para recibirlas del celular.]")
 
     class Manejador(BaseHTTPRequestHandler):
         def _autorizado(self):
@@ -232,7 +244,7 @@ def iniciar_servidor(cfg):
             pass
 
     try:
-        srv = ThreadingHTTPServer(("0.0.0.0", puerto), Manejador)
+        srv = ThreadingHTTPServer((host, puerto), Manejador)
     except OSError as e:
         print(f"[No pude abrir el puerto {puerto} para la cámara: {e}]")
         return

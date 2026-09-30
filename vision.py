@@ -37,23 +37,35 @@ def _nube(conf, sistema, instruccion, b64):
 
 
 def _nube_varias(conf, sistema, instruccion, lista_b64):
-    from openai import OpenAI
-
     nube = conf.get("nube", {})
     clave = os.environ.get(nube.get("clave_env", ""), "")
     if not clave:
         raise RuntimeError("sin clave de visión en las variables de entorno")
-    cliente = OpenAI(api_key=clave, base_url=nube["url"], timeout=nube.get("timeout", 25),
-                     max_retries=0)
+    cli = cerebro.cliente(nube["url"], clave, nube.get("timeout", 25))
     partes = [{"type": "text", "text": instruccion}]
     partes += [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b}"}}
                for b in lista_b64]
-    r = cliente.chat.completions.create(
-        model=nube["modelo"],
-        temperature=0.5,
-        max_tokens=int(conf.get("max_tokens", 400)) * len(lista_b64),
-        messages=[{"role": "system", "content": sistema}, {"role": "user", "content": partes}])
+    try:
+        r = cli.chat.completions.create(
+            model=nube["modelo"],
+            temperature=0.5,
+            max_tokens=int(conf.get("max_tokens", 400)) * len(lista_b64),
+            messages=[{"role": "system", "content": sistema}, {"role": "user", "content": partes}])
+    except Exception as e:
+        if cerebro.es_error_de_red(e):
+            cerebro.marcar_conexion(cerebro.host_de(nube["url"]), False)
+        raise
     return r.choices[0].message.content or ""
+
+
+def _usar_nube(conf):
+    modo = conf.get("modo", "auto")
+    nube = conf.get("nube", {}) or {}
+    if modo == "offline" or not nube.get("url"):
+        return False
+    if modo == "online":
+        return True
+    return bool(os.environ.get(nube.get("clave_env", ""))) and cerebro.hay_internet(cerebro.host_de(nube["url"]))
 
 
 def _local(conf, sistema, instruccion, b64):
@@ -70,16 +82,19 @@ def _local_varias(conf, sistema, instruccion, lista_b64):
     return r.message.content or ""
 
 
-def ver(cfg, img, instruccion, sistema):
-    """Devuelve el texto que respondió el modelo de visión (o lanza RuntimeError)."""
-    conf = cfg.get("vision", {}) or {}
-    modo = conf.get("modo", "auto")
+def ver(cfg, img, instruccion, sistema, max_tokens=None, lado=None):
+    """Devuelve el texto que respondió el modelo de visión (o lanza RuntimeError).
+    lado: reduce la imagen a ese tamaño máximo (menos tokens: el plan gratis de Groq limita
+    los tokens de entrada por minuto y cada foto grande cuesta ~2.000)."""
+    conf = dict(cfg.get("vision", {}) or {})
+    if max_tokens:
+        conf["max_tokens"] = max_tokens
+    if lado:
+        img = img.copy()
+        img.thumbnail((lado, lado))
     sistema = sistema + "\n\n" + REGLAS_PERSONAS
     b64 = _b64(img)
-    clave_env = conf.get("nube", {}).get("clave_env", "")
-    usar_nube = modo == "online" or (modo == "auto" and cerebro.hay_internet()
-                                     and bool(os.environ.get(clave_env)))
-    if usar_nube:
+    if _usar_nube(conf):
         try:
             return _limpiar(_nube(conf, sistema, instruccion, b64))
         except Exception as e:
@@ -95,15 +110,16 @@ def ver_varias(cfg, imagenes, instruccion, sistema):
     """Varias imágenes en UNA sola petición (Groq acepta hasta 3). Sirve para recorrer una
     página: el modelo ve todas las partes juntas y arma una explicación con hilo."""
     conf = cfg.get("vision", {}) or {}
-    modo = conf.get("modo", "auto")
     sistema = sistema + "\n\n" + REGLAS_PERSONAS
     lista = []
     for i in imagenes[:3]:
         chica = i.convert("RGB")
-        chica.thumbnail((1280, 1280))  # menos peso de subida; el detalle alcanza para leer
+        # 1024 y no 1280: tres capturas a 1280 pedían ~6.200 tokens y el plan gratis de Groq
+        # permite 7.000 por minuto (así falló "baja la página y explícala"); el texto se sigue
+        # leyendo bien a este tamaño.
+        chica.thumbnail((1024, 1024))
         lista.append(_b64(chica))
-    clave_env = conf.get("nube", {}).get("clave_env", "")
-    if modo == "online" or (modo == "auto" and cerebro.hay_internet() and os.environ.get(clave_env)):
+    if _usar_nube(conf):
         try:
             return _limpiar(_nube_varias(conf, sistema, instruccion, lista))
         except Exception as e:

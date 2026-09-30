@@ -14,7 +14,7 @@ import time
 import pyautogui
 
 import archivos
-from skills import Callado, skill
+from skills import Callado, Fallo, skill
 
 EXTENSIONES = (".pptx", ".ppt", ".ppsx", ".pps", ".pptm", ".odp")
 _contenido = {}      # ruta completa -> [ {numero, titulo, texto, notas}, ... ]
@@ -279,7 +279,7 @@ def _buscar_archivo_presentacion(consulta):
 def abrir_presentacion(consulta, iniciar=False):
     ruta = _buscar_archivo_presentacion(consulta)
     if not ruta:
-        return f"No encontré ninguna presentación parecida a '{consulta}'."
+        return Fallo(f"No encontré ninguna presentación parecida a '{consulta}'.")
     nombre = os.path.basename(ruta)
     app = _app(crear=True)
     if app is None:  # sin PowerPoint por COM: se abre con lo que tenga Windows asociado
@@ -303,7 +303,7 @@ def abrir_presentacion(consulta, iniciar=False):
         except Exception:
             pass
     except Exception as e:
-        return f"No pude abrir {nombre} en PowerPoint: {type(e).__name__}."
+        return Fallo(f"No pude abrir {nombre} en PowerPoint: {type(e).__name__}.")
     diapos = contenido(pres, forzar=True)
     if iniciar:
         try:
@@ -351,7 +351,7 @@ def _presentacion_com(accion, numero):
     if accion in ("iniciar", "iniciar_aqui"):
         pres = _presentacion_activa()
         if pres is None:
-            return "No hay ninguna presentación abierta. Pídeme que abra una."
+            return Fallo("No hay ninguna presentación abierta. Pídeme que abra una.")
         desde = 1
         if accion == "iniciar_aqui":
             try:
@@ -367,7 +367,7 @@ def _presentacion_com(accion, numero):
 
     v = _vista()
     if v is None:
-        return "La presentación no está en pantalla completa. Dime 'inicia la presentación'."
+        return Fallo("La presentación no está en pantalla completa. Dime 'inicia la presentación'.")
     total = app.SlideShowWindows.Item(1).Presentation.Slides.Count
     veces = max(1, numero) if accion in ("siguiente", "anterior") else 1
 
@@ -381,7 +381,7 @@ def _presentacion_com(accion, numero):
             v.Previous()
     elif accion == "ir":
         if not 1 <= numero <= total:
-            return f"La presentación tiene {total} diapositivas; no existe la {numero}."
+            return Fallo(f"La presentación tiene {total} diapositivas; no existe la {numero}.")
         v.GotoSlide(numero)
     elif accion == "primera":
         v.First()
@@ -430,6 +430,35 @@ def _presentacion_teclas(accion, numero):
         else:
             _teclas(t)
     return Callado("Hecho.")
+
+
+def _ventana_presentacion():
+    """hwnd de la ventana de pantalla completa de PowerPoint (o None)."""
+    return _ventana_clase("screenClass")
+
+
+@skill("mostrar_presentacion",
+       "Regresa a la presentación de PowerPoint y la pone al frente en pantalla completa (desde "
+       "el software, el navegador u otra app): 'regresa a la presentación', 'muestra la "
+       "presentación'. Si estaba abierta pero no en pantalla completa, la inicia desde la "
+       "diapositiva actual.")
+def mostrar_presentacion():
+    import control
+    h = _ventana_presentacion()
+    if h:
+        control.traer_al_frente(h)
+        reenfocar()
+        try:
+            v = _vista()
+            if v is not None and v.State in (NEGRA, BLANCA):
+                v.State = CORRIENDO
+        except Exception:
+            pass
+        actual, total = posicion()
+        return Callado(f"De vuelta a la presentación{f', diapositiva {actual} de {total}' if actual else ''}.")
+    if _presentacion_activa() is not None:
+        return presentacion("iniciar_aqui")
+    return Fallo("No hay ninguna presentación abierta. Pídeme que abra una.")
 
 
 @skill("explicar_diapositiva",

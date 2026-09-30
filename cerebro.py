@@ -1,27 +1,120 @@
 import json
 import os
 import socket
+import threading
 import time
 import uuid
+from urllib.parse import urlparse
 
 import ollama
 
-_ultimo = (0.0, False)
+HOST_POR_DEFECTO = "api.groq.com"
+_conexion = {}   # host -> (momento de la última comprobación, ¿hubo conexión?)
+_clientes = {}   # (url, clave, timeout) -> cliente OpenAI reutilizable
+_lock_clientes = threading.Lock()
 
 
-def hay_internet():
-    """Comprueba conexión (cacheado 30 s para no frenar cada respuesta)."""
-    global _ultimo
-    t, ok = _ultimo
+def host_de(url):
+    """'https://api.groq.com/openai/v1' -> 'api.groq.com'."""
+    try:
+        return urlparse(url).hostname or HOST_POR_DEFECTO
+    except ValueError:
+        return HOST_POR_DEFECTO
+
+
+def _conecta(host, puerto=443, limite=2.5):
+    """True si se puede abrir una conexión TCP al servicio. Corre en un hilo con tiempo
+    límite: con el DNS roto, resolver el nombre puede bloquearse varios segundos."""
+    resultado = []
+
+    def probar():
+        try:
+            socket.create_connection((host, puerto), timeout=limite).close()
+            resultado.append(True)
+        except OSError:
+            resultado.append(False)
+    hilo = threading.Thread(target=probar, daemon=True)
+    hilo.start()
+    hilo.join(limite + 0.5)
+    return bool(resultado and resultado[0])
+
+
+def hay_internet(host=HOST_POR_DEFECTO):
+    """¿Se llega al servicio en la nube? (cacheado 30 s para no frenar cada respuesta).
+
+    Antes se probaba el DNS de Cloudflare (1.1.1.1:53); muchas redes escolares y de eventos
+    bloquean DNS externo y Jarvis creía que no había internet aunque Groq sí funcionara.
+    Ahora se prueba el servidor real al que se le va a hablar."""
+    t, ok = _conexion.get(host, (0.0, False))
     if time.time() - t < 30:
         return ok
-    try:
-        socket.create_connection(("1.1.1.1", 53), timeout=1.5).close()
-        ok = True
-    except OSError:
-        ok = False
-    _ultimo = (time.time(), ok)
+    ok = _conecta(host)
+    _conexion[host] = (time.time(), ok)
     return ok
+
+
+def marcar_conexion(host, ok):
+    """Lo que se aprende al usar el servicio vale más que la prueba: si una petición real
+    falló por red, las siguientes no pierden tiempo intentándolo durante 30 s."""
+    _conexion[host] = (time.time(), bool(ok))
+
+
+def _http_persistente(timeout):
+    """El SDK de OpenAI cierra las conexiones tras 5 s sin uso (keepalive_expiry de httpx):
+    entre una orden de voz y la siguiente siempre pasan más de 5 s, así que CADA pregunta
+    repetía el saludo TLS con Groq (~0.3 s desde México). Se conservan 50 s (por debajo de lo
+    que suelen aguantar los servidores) y genesis.py las mantiene vivas durante la exposición."""
+    try:
+        import httpx2
+        from openai import DefaultHttpx2Client
+        return DefaultHttpx2Client(timeout=timeout, limits=httpx2.Limits(
+            max_connections=20, max_keepalive_connections=10, keepalive_expiry=50))
+    except ImportError:
+        return None
+
+
+def conexion_rota(e):
+    """Error de conexión "rápido" (no un timeout): típico de reutilizar una conexión que el
+    servidor ya cerró. Se reintenta al instante con una nueva en vez de pasar al respaldo."""
+    return type(e).__name__ in ("APIConnectionError", "RemoteProtocolError", "ReadError",
+                                "ConnectError", "WriteError")
+
+
+def cliente(url, clave, timeout=20):
+    """Cliente OpenAI reutilizable. Crear uno por petición repetía el saludo TLS cada vez
+    (~0.1-0.3 s). max_retries=0: si algo falla se pasa de inmediato al siguiente respaldo."""
+    from openai import OpenAI
+    k = (url, clave, float(timeout))
+    with _lock_clientes:
+        c = _clientes.get(k)
+        if c is None:
+            http = _http_persistente(timeout)
+            c = OpenAI(api_key=clave, base_url=url, timeout=timeout, max_retries=0,
+                       **({"http_client": http} if http is not None else {}))
+            _clientes[k] = c
+        return c
+
+
+def mantener_caliente(cfg):
+    """Una petición mínima (lista de modelos, gratis) para que la conexión con la nube siga
+    abierta y la siguiente pregunta no pague el arranque. Lo llama genesis.py cada ~40 s
+    mientras hay exposición."""
+    provs = _proveedores(cfg)
+    if not provs:
+        return
+    p = provs[0]
+    try:
+        cliente(p["url"], os.environ.get(p.get("clave_env", ""), ""), p.get("timeout", 20)).models.list()
+        marcar_conexion(host_de(p["url"]), True)
+    except Exception as e:
+        if es_error_de_red(e):
+            marcar_conexion(host_de(p["url"]), False)
+
+
+def es_error_de_red(e):
+    nombre = type(e).__name__
+    return nombre in ("APIConnectionError", "APITimeoutError", "ConnectError", "ConnectTimeout",
+                      "ReadTimeout", "TimeoutException") or isinstance(e, (OSError, TimeoutError))
 
 
 # ---------- Conversión del historial (formato neutro) ----------
@@ -64,22 +157,14 @@ class SinCerebro(Exception):
     """Ni la nube ni el modelo local respondieron; el mensaje ya viene listo para decirlo."""
 
 
-def _chat_local(cfg, history, tools, temperatura):
-    # num_ctx: Ollama usa por defecto una ventana de ~4k tokens y solo las ~40 herramientas
-    # ocupan ~6k; sin esto recortaba en silencio las instrucciones y respondía a ciegas.
-    resp = ollama.chat(model=cfg["model"], messages=_a_ollama(history),
-                       tools=tools or None,
-                       options={"temperature": temperatura,
-                                "num_ctx": cfg.get("ollama_ctx", 16384)})
-    msg = resp.message
-    calls = [{"id": f"call_{uuid.uuid4().hex[:8]}", "name": c.function.name,
-              "args": dict(c.function.arguments)} for c in (msg.tool_calls or [])]
-    return {"content": msg.content or "", "tool_calls": calls}
+class CorteEnVivo(SinCerebro):
+    """La respuesta se cortó a media frase (ya se estaba diciendo en voz alta): no se puede
+    pasar en silencio a otro modelo porque el público ya oyó el principio."""
 
 
 def _proveedores(cfg):
-    """Lista de cerebros en la nube a probar, en orden. El plan gratis de Groq da 8,000 tokens
-    por minuto POR MODELO: si uno se satura, el siguiente modelo tiene su propio límite.
+    """Lista de cerebros en la nube a probar, en orden. El plan gratis de Groq da un límite de
+    tokens por minuto POR MODELO: si uno se satura, el siguiente modelo tiene su propio límite.
     config.json → nube.respaldos (modelos del mismo proveedor) y nubes_extra (otros, p. ej.
     Claude de Anthropic)."""
     base = dict(cfg.get("nube", {}) or {})
@@ -93,14 +178,15 @@ def _proveedores(cfg):
     return [p for p in lista if os.environ.get(p.get("clave_env", ""), "")]
 
 
-def _chat_nube(prov, history, tools, temperatura):
-    from openai import OpenAI
+def _args(texto):
+    try:
+        datos = json.loads(texto or "{}")
+        return datos if isinstance(datos, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
-    clave = os.environ.get(prov.get("clave_env", ""), "")
-    # max_retries=0: si el servicio está saturado NO se espera (antes se quedaba hasta 45 s
-    # reintentando en silencio); se pasa de inmediato al siguiente modelo de la lista.
-    cliente = OpenAI(api_key=clave, base_url=prov["url"], timeout=prov.get("timeout", 20),
-                     max_retries=0)
+
+def _kwargs_nube(prov, history, tools, temperatura):
     kwargs = {"model": prov["modelo"], "messages": _a_openai(history),
               "temperature": temperatura}
     if prov.get("max_tokens"):
@@ -110,23 +196,79 @@ def _chat_nube(prov, history, tools, temperatura):
         kwargs["tool_choice"] = "auto"
     if prov.get("razonamiento") and "gpt-oss" in prov["modelo"]:
         kwargs["reasoning_effort"] = prov["razonamiento"]  # "low" = responde más rápido
+    return kwargs
+
+
+def _crear(cli, kwargs):
+    """chat.completions.create; si el modelo no acepta reasoning_effort, se reintenta sin él."""
     try:
-        msg = cliente.chat.completions.create(**kwargs).choices[0].message
+        return cli.chat.completions.create(**kwargs)
     except Exception as e:
         if "reasoning_effort" in kwargs and "reasoning" in str(e).lower():
             kwargs.pop("reasoning_effort")
-            msg = cliente.chat.completions.create(**kwargs).choices[0].message
-        else:
-            raise
+            return cli.chat.completions.create(**kwargs)
+        raise
 
-    calls = []
-    for c in msg.tool_calls or []:
-        try:
-            args = json.loads(c.function.arguments or "{}")
-        except json.JSONDecodeError:
-            args = {}
-        calls.append({"id": c.id, "name": c.function.name, "args": args})
-    return {"content": msg.content or "", "tool_calls": calls}
+
+def _chat_nube(prov, history, tools, temperatura, al_texto=None):
+    clave = os.environ.get(prov.get("clave_env", ""), "")
+    # max_retries=0 (en cliente()): si el servicio está saturado NO se espera (antes se quedaba
+    # hasta 45 s reintentando en silencio); se pasa de inmediato al siguiente modelo.
+    cli = cliente(prov["url"], clave, prov.get("timeout", 20))
+    kwargs = _kwargs_nube(prov, history, tools, temperatura)
+
+    if al_texto is None:
+        msg = _crear(cli, kwargs).choices[0].message
+        calls = [{"id": c.id, "name": c.function.name, "args": _args(c.function.arguments)}
+                 for c in (msg.tool_calls or [])]
+        return {"content": msg.content or "", "tool_calls": calls}
+
+    # Streaming: el texto se entrega en cuanto llega (para empezar a hablar con la primera
+    # frase) y las llamadas a herramientas se arman pedazo a pedazo.
+    kwargs["stream"] = True
+    contenido, llamadas = [], {}
+    for trozo in _crear(cli, kwargs):
+        if not trozo.choices:
+            continue
+        delta = trozo.choices[0].delta
+        if getattr(delta, "content", None):
+            contenido.append(delta.content)
+            al_texto(delta.content)
+        for tc in getattr(delta, "tool_calls", None) or []:
+            slot = llamadas.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+            if tc.id:
+                slot["id"] = tc.id
+            f = tc.function
+            if f is not None:
+                if f.name and f.name != slot["name"]:
+                    slot["name"] += f.name
+                if f.arguments:
+                    slot["args"] += f.arguments
+    calls = [{"id": s["id"] or f"call_{uuid.uuid4().hex[:8]}", "name": s["name"],
+              "args": _args(s["args"])} for _, s in sorted(llamadas.items()) if s["name"]]
+    return {"content": "".join(contenido), "tool_calls": calls}
+
+
+def _chat_local(cfg, history, tools, temperatura, al_texto=None):
+    # num_ctx: Ollama usa por defecto una ventana de ~4k tokens y solo las ~40 herramientas
+    # ocupan ~6k; sin esto recortaba en silencio las instrucciones y respondía a ciegas.
+    opciones = {"temperature": temperatura, "num_ctx": cfg.get("ollama_ctx", 16384)}
+    kwargs = {"model": cfg["model"], "messages": _a_ollama(history), "tools": tools or None,
+              "options": opciones, "keep_alive": cfg.get("ollama_keep_alive", "30m")}
+    if al_texto is None:
+        msg = ollama.chat(**kwargs).message
+        partes, llamadas = [msg.content or ""], list(msg.tool_calls or [])
+    else:
+        partes, llamadas = [], []
+        for trozo in ollama.chat(stream=True, **kwargs):
+            m = trozo.message
+            if m.content:
+                partes.append(m.content)
+                al_texto(m.content)
+            llamadas += list(m.tool_calls or [])
+    calls = [{"id": f"call_{uuid.uuid4().hex[:8]}", "name": c.function.name,
+              "args": dict(c.function.arguments or {})} for c in llamadas]
+    return {"content": "".join(partes), "tool_calls": calls}
 
 
 def _motivo(e):
@@ -138,25 +280,53 @@ def _motivo(e):
     return f"{type(e).__name__}: {t[:100]}"
 
 
-def chat(cfg, history, tools, temperatura=0.2):
+def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
     """Devuelve {'content', 'tool_calls', 'origen'}. Prueba los cerebros en la nube en orden
-    y, si ninguno responde, el modelo local."""
+    y, si ninguno responde, el modelo local.
+
+    al_texto(fragmento): si se pasa, la respuesta llega en streaming y cada pedazo de texto se
+    entrega en cuanto el modelo lo escribe (genesis.py empieza a hablar con la primera frase).
+    Si algo falla ANTES de entregar texto se prueba el siguiente cerebro como siempre; si falla
+    DESPUÉS, se lanza CorteEnVivo (no se puede "deshacer" lo que ya se dijo)."""
     modo = cfg.get("modo", "auto")
     proveedores = _proveedores(cfg) if modo != "offline" else []
-    usar_nube = bool(proveedores) and (modo == "online" or hay_internet())
+    usar_nube = bool(proveedores) and (modo == "online" or hay_internet(host_de(proveedores[0]["url"])))
 
+    estado = {"emitido": False}
+
+    def emitir(fragmento):
+        estado["emitido"] = True
+        al_texto(fragmento)
+    cb = emitir if al_texto is not None else None
+
+    caidos = set()  # servicios sin red en esta petición: sus otros modelos tampoco llegarían
     if usar_nube:
         for prov in proveedores:
-            try:
-                r = _chat_nube(prov, history, tools, temperatura)
-                r["origen"] = f"nube · {prov['modelo']}"
-                return r
-            except Exception as e:
-                print(f"[{prov['modelo']} no respondió ({_motivo(e)}); pruebo el siguiente]")
+            host = host_de(prov["url"])
+            if host in caidos:
+                continue
+            for intento in range(2):
+                try:
+                    r = _chat_nube(prov, history, tools, temperatura, cb)
+                    marcar_conexion(host, True)
+                    r["origen"] = f"nube · {prov['modelo']}"
+                    return r
+                except Exception as e:
+                    if estado["emitido"]:
+                        raise CorteEnVivo("Perdón, se me cortó la conexión.") from e
+                    if intento == 0 and conexion_rota(e):
+                        continue  # conexión vieja cerrada por el servidor: otra vez, ya
+                    print(f"[{prov['modelo']} no respondió ({_motivo(e)}); pruebo el siguiente]")
+                    if es_error_de_red(e):
+                        marcar_conexion(host, False)
+                        caidos.add(host)
+                    break
 
     try:
-        r = _chat_local(cfg, history, tools, temperatura)
+        r = _chat_local(cfg, history, tools, temperatura, cb)
     except Exception as e:
+        if estado["emitido"]:
+            raise CorteEnVivo("Perdón, perdí el hilo. ¿Me lo repites?") from e
         print(f"[El modelo local falló: {type(e).__name__}: {str(e)[:120]}]")
         if usar_nube:
             raise SinCerebro("Mis servidores están saturados en este momento. Dame unos "
@@ -165,6 +335,21 @@ def chat(cfg, history, tools, temperatura=0.2):
                          "esté abierto.") from e
     r["origen"] = "local"
     return r
+
+
+def precalentar(cfg):
+    """Abre de antemano la conexión con la nube (y carga el modelo local si no hay red), para
+    que la primera pregunta de la exposición no pague el arranque en frío."""
+    try:
+        provs = _proveedores(cfg)
+        if provs and hay_internet(host_de(provs[0]["url"])):
+            p = provs[0]
+            cliente(p["url"], os.environ.get(p.get("clave_env", ""), ""), p.get("timeout", 20)).models.list()
+        elif cfg.get("model"):
+            ollama.chat(model=cfg["model"], messages=[{"role": "user", "content": "hola"}],
+                        options={"num_predict": 1}, keep_alive=cfg.get("ollama_keep_alive", "30m"))
+    except Exception as e:
+        print(f"[Precalentar el cerebro falló: {type(e).__name__}: {str(e)[:100]}]")
 
 
 if __name__ == "__main__":
