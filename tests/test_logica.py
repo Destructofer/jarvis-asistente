@@ -234,6 +234,78 @@ class Voz(unittest.TestCase):
             voz.Locucion._abrir, voz._generar = orig_abrir, orig_generar
 
 
+class Respuestas(unittest.TestCase):
+    """responder() + Turno con un cerebro falso y una salida de audio falsa."""
+
+    def setUp(self):
+        class Salida:
+            def start(self): pass
+            def write(self, d): pass
+            def stop(self): pass
+            def abort(self): pass
+            def close(self): pass
+
+        def generar(clip, *_a, **_k):
+            clip.poner(np.zeros(240, np.int16))
+            clip.terminar()
+
+        self.orig = (voz.Locucion._abrir, voz._generar, cerebro.chat, genesis.hud.subtitulo,
+                     genesis.hud.estado)
+        voz.Locucion._abrir = lambda self, d: Salida()
+        voz._generar = generar
+        self.dichas = []
+        genesis.hud.subtitulo = self.dichas.append
+        genesis.hud.estado = lambda *_a: None
+        self.cfg = {"voz_activa": True, "respuesta_streaming": True, "skills": {}}
+        skills.configurar(self.cfg)
+
+    def tearDown(self):
+        (voz.Locucion._abrir, voz._generar, cerebro.chat, genesis.hud.subtitulo,
+         genesis.hud.estado) = self.orig
+
+    def _cerebro(self, respuestas):
+        llamadas = []
+
+        def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+            texto = respuestas[len(llamadas)]
+            llamadas.append(texto)
+            if al_texto:
+                for trozo in texto.split(" "):
+                    al_texto(trozo + " ")
+            return {"content": texto, "tool_calls": [], "origen": "falso"}
+        cerebro.chat = chat
+        return llamadas
+
+    def test_reintenta_si_llega_en_otro_idioma(self):
+        llamadas = self._cerebro(["这是 una respuesta rota.", "Esta es la respuesta buena, en español."])
+        turno = genesis.Turno(self.cfg, "¿qué es esto?")
+        r = genesis.responder(self.cfg, [{"role": "system", "content": "s"},
+                                         {"role": "user", "content": "¿qué es esto?"}], turno=turno)
+        turno.cerrar()
+        turno.esperar()
+        self.assertEqual(len(llamadas), 2)
+        self.assertIsInstance(r, genesis.YaDicho)
+        self.assertEqual(self.dichas, ["Esta es la respuesta buena, en español."])
+
+    def test_interrumpido_no_vuelve_a_preguntar(self):
+        llamadas = self._cerebro(["No debería pedirse."])
+        turno = genesis.Turno(self.cfg, "hola")
+        turno.interrumpido = True
+        with self.assertRaises(genesis.Interrumpido):
+            genesis.responder(self.cfg, [{"role": "system", "content": "s"}], turno=turno)
+        self.assertEqual(llamadas, [])
+
+    def test_streaming_por_frases(self):
+        self._cerebro(["Claro que sí. El sistema tiene tres módulos principales. Y todos funcionan en la nube."])
+        turno = genesis.Turno(self.cfg, "explica")
+        genesis.responder(self.cfg, [{"role": "system", "content": "s"}], turno=turno)
+        turno.cerrar()
+        turno.esperar()
+        self.assertGreaterEqual(len(self.dichas), 2)
+        self.assertEqual(" ".join(self.dichas),
+                         "Claro que sí. El sistema tiene tres módulos principales. Y todos funcionan en la nube.")
+
+
 class Historial(unittest.TestCase):
     def test_compactar_no_deja_herramientas_huerfanas(self):
         h = [{"role": "system", "content": "s"}]

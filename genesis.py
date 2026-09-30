@@ -295,6 +295,7 @@ class Turno:
         self.interrumpido = False
         self._relleno = None
         self._relleno_usado = False
+        self._loc_relleno = None
         self._texto_usuario = texto_usuario
         self._lock = threading.Lock()
 
@@ -341,7 +342,9 @@ class Turno:
 
     @property
     def dijo_algo(self):
-        return any(loc.dijo_algo or loc.texto_dicho for loc in self.locuciones)
+        """¿Ya se dijo (o está por decirse) parte de la RESPUESTA? El relleno no cuenta."""
+        return any(loc.dijo_algo or loc.texto_dicho or loc.primer_clip is not None
+                   for loc in self.locuciones if loc is not self._loc_relleno)
 
     def desglose(self, t0):
         """'modelo 0.7s → frase 0.8s → audio 1.1s (elevenlabs)': dónde se fue el tiempo."""
@@ -361,6 +364,10 @@ class Turno:
     @property
     def rechazada(self):
         return any(loc.rechazada for loc in self.locuciones)
+
+    def descartar_rechazadas(self):
+        with self._lock:
+            self.locuciones = [loc for loc in self.locuciones if not loc.rechazada]
 
     def esperar(self):
         for loc in list(self.locuciones):
@@ -392,6 +399,7 @@ class Turno:
                 return
             self._relleno_usado = True
             loc = self._nueva()
+            self._loc_relleno = loc
             loc.agregar(frase)
             loc.cerrar()
 
@@ -785,6 +793,8 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
     externo_visto = False
     streaming = turno is not None and cfg.get("respuesta_streaming", True)
     for _ in range(8):
+        if turno is not None and turno.interrumpido:
+            raise Interrumpido()  # ni una vuelta más al modelo: ya hay una orden nueva
         temperatura = 0.2 if fallos_idioma == 0 else 0.7
         try:
             r = cerebro.chat(cfg, history, skills.schemas(herramientas), temperatura,
@@ -798,8 +808,10 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
         if corrupta or (turno is not None and turno.rechazada):
             fallos_idioma += 1
             print("[Respuesta en otro idioma descartada, reintentando...]")
-            if turno is not None and turno.dijo_algo:
-                return YaDicho(CJK.sub("", r["content"]))  # lo que ya se dijo, sin repetirlo
+            if turno is not None:
+                turno.descartar_rechazadas()  # que el reintento no cargue con el rechazo anterior
+                if turno.dijo_algo:
+                    return YaDicho(CJK.sub("", r["content"]))  # lo que ya se dijo, sin repetirlo
             if fallos_idioma >= 3:
                 return "No logré procesar eso. ¿Puedes repetirlo de otra forma?"
             continue
@@ -819,7 +831,8 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
 
         if not r["tool_calls"]:
             texto = limpiar(r["content"])
-            return YaDicho(texto) if streaming and turno.dijo_algo or (streaming and texto) else texto
+            # con streaming todo el texto ya pasó por el Turno (se está diciendo)
+            return YaDicho(texto) if streaming else texto
 
         resultados = []
         for c in r["tool_calls"]:
@@ -1111,7 +1124,19 @@ def main(persistente=False):
                 continue
             break
 
-        _procesar(cfg, history, user, escrito, interruptor)
+        try:
+            _procesar(cfg, history, user, escrito, interruptor)
+        except Exception as e:
+            # Nada de una sola orden debe tumbar el bucle: en plena demo, reiniciar Jarvis
+            # entero (la bandeja lo relanza en 10 s) se notaría mucho más que un "repítemelo".
+            import traceback
+            traceback.print_exc()
+            print(f"[Error procesando la orden: {type(e).__name__}: {str(e)[:150]}]\n")
+            hud.estado("error")
+            try:
+                decir(cfg, "Tuve un problema con eso. ¿Me lo repites?")
+            except Exception:
+                pass
 
 
 def _instancia_unica():
