@@ -1,7 +1,11 @@
 """Revisa pieza por pieza que todo lo de Jarvis funcione en esta PC, antes de la demo.
 
-    python diagnostico.py            -> revisión completa (no mueve nada ni habla)
+    python diagnostico.py demo       -> CHECKLIST DEL DÍA DE LA DEMO (todo en verde o rojo)
+    python diagnostico.py            -> revisión general (no mueve nada ni habla)
+    python diagnostico.py latencia   -> mide cuánto tarda en contestar (cerebro + voz, sin sonar)
     python diagnostico.py audio      -> lista micrófonos y salidas de audio
+    python diagnostico.py llamada    -> ¿llega el audio de la videollamada (cable virtual)?
+    python diagnostico.py ventanas   -> ventanas abiertas (para camara.ventana_titulo)
     python diagnostico.py voz        -> habla por la salida privada y por la del público
     python diagnostico.py voces      -> lista y te deja escuchar las voces naturales de Edge
     python diagnostico.py camaras    -> prueba las cámaras 0 a 5 y guarda una foto de cada una
@@ -11,6 +15,7 @@
     python diagnostico.py powerpoint -> revisa que PowerPoint responda por COM
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -261,6 +266,224 @@ def powerpoint():
     print(f"  En pantalla completa: {presentacion.en_curso()}  Posición: {presentacion.posicion()}")
 
 
+def _clave_usuario(nombre):
+    """Variable de entorno; si la terminal se abrió antes del setx, se lee del registro."""
+    valor = os.environ.get(nombre, "")
+    if valor:
+        return valor
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            valor = winreg.QueryValueEx(k, nombre)[0]
+            if valor:
+                os.environ[nombre] = valor  # para el resto de esta revisión
+            return valor
+    except OSError:
+        return ""
+
+
+def _groq(c):
+    """Latencia real y límite por minuto del plan de Groq (una petición mínima)."""
+    import cerebro
+    nube = c.get("nube", {})
+    cli = cerebro.cliente(nube.get("url"), os.environ.get(nube.get("clave_env", ""), ""), 20)
+    t = time.time()
+    crudo = cli.chat.completions.with_raw_response.create(
+        model=nube.get("modelo"), messages=[{"role": "user", "content": "Di: listo"}], max_tokens=5)
+    latencia = time.time() - t
+    limite = crudo.headers.get("x-ratelimit-limit-tokens")
+    return latencia, int(limite) if limite and str(limite).isdigit() else None
+
+
+def demo():
+    """Checklist del día de la demo: cada pieza en verde (OK) o rojo (!!) con qué hacer."""
+    print("== Jarvis: checklist de la demo ==")
+    c = cfg()
+    import skills
+    skills.configurar(c)
+    rojos = []
+
+    def mal_(msg):
+        rojos.append(msg)
+        mal(msg)
+
+    print("\n-- Cerebro --")
+    if _clave_usuario(c.get("nube", {}).get("clave_env", "GROQ_API_KEY")):
+        try:
+            lat, limite = _groq(c)
+            (ok if lat < 2 else mal_)(f"Groq responde en {lat:.1f}s")
+            if limite is not None and limite <= 20000:
+                mal_(f"Plan gratis de Groq ({limite:,} tokens por minuto): en la demo se satura a la "
+                     "2ª-3ª orden. Actívale el plan Developer en console.groq.com (una demo cuesta centavos).")
+            elif limite:
+                ok(f"Límite de Groq: {limite:,} tokens por minuto")
+        except Exception as e:
+            mal_(f"Groq no responde: {type(e).__name__}: {str(e)[:100]}")
+    else:
+        mal_("Falta GROQ_API_KEY (setx GROQ_API_KEY \"tu_clave\" y abre otra terminal)")
+    try:
+        import ollama
+        modelos = [m.model for m in ollama.list().models]
+        for m in (c.get("model"), c.get("vision", {}).get("local_modelo")):
+            (ok if m and any(x.startswith(m) for x in modelos) else mal_)(
+                f"Modelo local {m}" + ("" if any(x.startswith(str(m)) for x in modelos) else f": falta, ollama pull {m}"))
+        log = Path(os.environ.get("LOCALAPPDATA", "")) / "Ollama" / "server.log"
+        if log.exists():
+            ultimas = [ln for ln in log.read_text(encoding="utf-8", errors="ignore").splitlines()
+                       if "inference compute" in ln]
+            if ultimas and "library=cpu" in ultimas[-1]:
+                mal_("Ollama no está usando la GPU (el modelo local será MUY lento). Reinstálalo "
+                     "desde ollama.com: la actualización de julio dejó la instalación incompleta.")
+            elif ultimas:
+                ok("Ollama usa la GPU")
+    except Exception as e:
+        mal_(f"Ollama no responde ({type(e).__name__}): sin internet no habría cerebro")
+
+    print("\n-- Voz --")
+    import voz
+    voz.configurar(c)
+    if c.get("elevenlabs_voz") and _clave_usuario("ELEVENLABS_API_KEY"):
+        try:
+            t = time.time()
+            primero = next(voz._eleven_trozos("Prueba.", c["elevenlabs_voz"], os.environ["ELEVENLABS_API_KEY"]))
+            (ok if len(primero) else mal_)(f"ElevenLabs responde en {time.time() - t:.1f}s")
+        except Exception as e:
+            mal_(f"ElevenLabs falla: {type(e).__name__}: {str(e)[:100]} (se usará Edge, más lento)")
+    (ok if voz._modelo_piper() else mal_)("Voz local Piper (respaldo sin internet)"
+                                          + ("" if voz._modelo_piper() else ": falta voces/*.onnx"))
+
+    print("\n-- Oídos --")
+    try:
+        import ctranslate2
+        (ok if ctranslate2.get_cuda_device_count() else mal)("GPU para Whisper"
+                                                             if ctranslate2.get_cuda_device_count() else
+                                                             "Sin GPU para Whisper (funciona en CPU, más lento)")
+    except Exception:
+        pass
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Multimedia\Audio") as k:
+            ducking = winreg.QueryValueEx(k, "UserDuckingPreference")[0]
+    except OSError:
+        ducking = 1  # el valor por defecto de Windows: bajar 80 %
+    if ducking != 3:
+        mal_("Windows baja el volumen de todo durante llamadas/micrófono Bluetooth: Más opciones de "
+             "sonido → Comunicaciones → 'No hacer nada' (si no, la voz de Jarvis se oye al 20 %).")
+    else:
+        ok("Windows no baja el volumen en llamadas")
+    audio()
+
+    print("\n-- Exposición --")
+    powerpoint()
+    import conocimiento
+    (ok if len(conocimiento.texto(c)) > 800 else mal_)(
+        "Conocimiento del proyecto" + ("" if len(conocimiento.texto(c)) > 800 else
+                                       ": llena conocimiento/proyecto.md para que responda al jurado"))
+    d = c.get("demo", {}) or {}
+    if not d.get("url"):
+        mal_("Falta demo.url en config.json (la dirección de tu software)")
+    else:
+        try:
+            from urllib.request import urlopen
+            urlopen(d["url"], timeout=8).close()
+            ok(f"Tu software responde: {d['url']}")
+        except Exception as e:
+            mal_(f"No abre {d['url']}: {type(e).__name__}")
+        try:
+            import navegador  # noqa: F401
+            ok("Playwright listo para manejar el navegador")
+        except ImportError:
+            mal_("Falta Playwright: .venv\\Scripts\\pip install playwright")
+        cache = DATOS / "demo_cache.json"
+        if cache.exists():
+            datos = json.loads(cache.read_text(encoding="utf-8"))
+            ok(f"Demo ensayada el {datos.get('fecha')}: {len(datos.get('modulos', {}))} módulos listos")
+        else:
+            mal_("La demo no está ensayada: di 'Jarvis, ensaya la demo' con el sistema abierto")
+    if c.get("mantenimiento_activo", True):
+        ok("Mantenimiento: se calla solo durante la exposición")
+    print("\n" + ("TODO LISTO. ¡Éxito en la demo!" if not rojos else
+                  f"{len(rojos)} cosa(s) por resolver (arriba, en [!!])."))
+
+
+def latencia():
+    """Cuánto tarda Jarvis en empezar a contestar: cerebro (primera frase) + voz (primer audio)."""
+    print("== Latencia (sin sonar nada) ==")
+    c = cfg()
+    for nombre in (c.get("nube", {}).get("clave_env", "GROQ_API_KEY"), "ELEVENLABS_API_KEY"):
+        _clave_usuario(nombre)
+    import cerebro
+    import genesis
+    import skills
+    import voz
+    skills.configurar(c)
+    voz.configurar(c)
+    cerebro.precalentar(c)
+    voz.mantener_caliente()
+    sistema = {"role": "system", "content": genesis._prompt(c)}
+    for pregunta in ("¿Para qué sirve un sistema de inventarios? Una frase.",
+                     "Dile al público en una frase qué es la inteligencia artificial."):
+        t0 = time.time()
+        marcas = {}
+
+        def al_texto(f, _m=marcas, _t0=t0):
+            _m.setdefault("token", time.time() - _t0)
+            _m["texto"] = _m.get("texto", "") + f
+            if "frase" not in _m and any(x in _m["texto"] for x in ".!?"):
+                _m["frase"] = time.time() - _t0
+        try:
+            cerebro.chat(c, [sistema, {"role": "user", "content": pregunta}],
+                         skills.schemas(genesis.elegir_herramientas(pregunta, [])), 0.2, al_texto)
+        except Exception as e:
+            mal(f"cerebro: {type(e).__name__}: {str(e)[:100]}")
+            continue
+        clip = voz._Clip((marcas.get("texto") or "Listo.").split(".")[0] + ".")
+        t1 = time.time()
+        voz._generar(clip, c.get("elevenlabs_voz", ""))
+        voz_seg = (clip.t_primer_audio or time.time()) - t1
+        total = marcas.get("frase", 0) + voz_seg
+        (ok if total < 2 else mal)(f"primera frase del cerebro {marcas.get('frase', 0):.1f}s + primer audio "
+                                   f"({clip.motor}) {voz_seg:.1f}s = ~{total:.1f}s hasta que empieza a hablar")
+
+
+def ventanas():
+    """Ventanas visibles con su programa y tamaño: el título de la videollamada va en
+    config.json → camara.ventana_titulo (fuente "ventana")."""
+    print("== Ventanas abiertas ==")
+    import control
+    import win32gui
+    for h in control._todas_las_ventanas():
+        x0, y0, x1, y1 = win32gui.GetWindowRect(h)
+        print(f"  {control._titulo(h)[:60]:<60} {control._proceso(h):<22} {x1 - x0}x{y1 - y0}")
+
+
+def llamada():
+    """¿Llega audio por el micrófono configurado (p. ej. CABLE Output de la videollamada)?"""
+    print("== Audio de la llamada (15 s): habla por los lentes ==")
+    import numpy as np
+    import sounddevice as sd
+
+    import escuchar
+    c = cfg()
+    indice = escuchar.resolver_dispositivo(c.get("mic_dispositivo"))
+    print(f"  Micrófono: {escuchar._nombre_dispositivo(indice)}")
+    fin, ceros, voz_max = time.time() + 15, 0, 0.0
+    with sd.InputStream(samplerate=16000, channels=1, dtype="float32", blocksize=1600, device=indice) as st:
+        while time.time() < fin:
+            data, _ = st.read(1600)
+            nivel = float(np.sqrt(np.mean(data ** 2)))
+            voz_max = max(voz_max, nivel)
+            ceros += float(np.max(np.abs(data))) < escuchar.SILENCIO_DIGITAL
+            print(f"\r  nivel {nivel:.4f} {'#' * min(40, int(nivel * 400)):<40}", end="", flush=True)
+    print()
+    if ceros > 100:
+        mal("Llega silencio total: ¿la llamada está conectada y la salida de WhatsApp va a 'CABLE Input'?")
+    elif voz_max < 0.01:
+        mal("Llega audio pero muy bajo: sube el volumen de WhatsApp en el mezclador de Windows.")
+    else:
+        ok("El audio de la llamada llega bien.")
+
+
 def general():
     print("== Jarvis: revisión general ==")
     c = cfg()
@@ -290,10 +513,11 @@ def general():
 
 if __name__ == "__main__":
     pruebas = {"audio": audio, "voz": probar_voz, "voces": voces, "camaras": camaras, "vision": vision,
-               "hud": probar_hud, "palabra": palabra, "powerpoint": powerpoint}
+               "hud": probar_hud, "palabra": palabra, "powerpoint": powerpoint, "demo": demo,
+               "latencia": latencia, "ventanas": ventanas, "llamada": llamada}
     arg = sys.argv[1] if len(sys.argv) > 1 else ""
     import skills
     skills.configurar(cfg())
     pruebas.get(arg, general)()
-    import os
+    sys.stdout.flush()  # os._exit no vacía la salida: sin esto, redirigida a un archivo se perdía
     os._exit(0)  # el hilo de Tk del HUD puede trabar el cierre normal

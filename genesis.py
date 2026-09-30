@@ -511,7 +511,7 @@ def atajo_presentacion(texto):
 
 def atajo_sistema(texto):
     """'Muéstrales el sistema' → el navegador de la demo, al instante (sin el modelo)."""
-    if navegador is None or not skills.existe("abrir_sistema"):
+    if navegador is None or not skills.existe("abrir_sistema") or not skills.disponible("abrir_sistema"):
         return None
     if _limpia_orden(texto) in MOSTRAR_SISTEMA:
         return "abrir_sistema", {}

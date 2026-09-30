@@ -135,7 +135,16 @@
     "desplazar": true,
     "recorrer_y_explicar": true,
     "mostrar_presentacion": true,
-    "pregunta_del_publico": true
+    "pregunta_del_publico": true,
+    "abrir_sistema": true,
+    "ir_a_modulo": true,
+    "explicar_pantalla": true,
+    "recorrer_modulos": true,
+    "resaltar": true,
+    "llenar_campo": true,
+    "iniciar_sesion_demo": true,
+    "volver_atras": true,
+    "ensayar_demo": true
   },
   "mantenimiento_activo": true,
   "mantenimiento_intervalo_min": 30,
@@ -165,9 +174,23 @@
   "demo": {
     "activo": false,
     "url": "",
+    "pantalla_completa": true,
+    "abrir_al_iniciar": false,
+    "menu_selector": "",
+    "modulos": [],
+    "omitir": [],
+    "intro_recorrido": "Les muestro el sistema, módulo por módulo.",
+    "cierre_recorrido": "Y ese es el recorrido completo por el sistema.",
+    "resaltar_seg": 6,
+    "login": {
+      "usuario_env": "DEMO_USUARIO",
+      "clave_env": "DEMO_CLAVE",
+      "campo_usuario": "Usuario",
+      "campo_clave": "Contraseña",
+      "boton": "Iniciar sesión"
+    },
     "confirmar_solo_voz": true,
-    "silenciar_avisos": true,
-    "abrir_al_iniciar": false
+    "silenciar_avisos": true
   },
   "camara": {
     "fuente": "webcam",
