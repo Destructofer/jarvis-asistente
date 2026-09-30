@@ -268,18 +268,10 @@ def powerpoint():
 
 def _clave_usuario(nombre):
     """Variable de entorno; si la terminal se abrió antes del setx, se lee del registro."""
-    valor = os.environ.get(nombre, "")
-    if valor:
-        return valor
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
-            valor = winreg.QueryValueEx(k, nombre)[0]
-            if valor:
-                os.environ[nombre] = valor  # para el resto de esta revisión
-            return valor
-    except OSError:
-        return ""
+    if not os.environ.get(nombre):
+        import configuracion
+        configuracion.cargar_claves_de_windows(cfg())
+    return os.environ.get(nombre, "")
 
 
 def _groq(c):

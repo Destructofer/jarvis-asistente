@@ -4,7 +4,8 @@ Jarvis es Genesis (el proyecto de tu amigo, con todo lo suyo intacto, incluido T
 en **un integrante más del equipo** para exponer: ve al público, maneja tu software en vivo,
 cambia a la presentación, responde preguntas y habla por las bocinas mientras tú expones.
 
-Empieza por el **checklist**: `python diagnostico.py demo` te dice en verde/rojo qué falta.
+Empieza por el **checklist** (desde la carpeta `jarvis`): `.\.venv\Scripts\python diagnostico.py demo`
+te dice en verde/rojo qué falta.
 
 ## Qué hace ahora
 

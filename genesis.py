@@ -1075,6 +1075,10 @@ def _procesar(cfg, history, user, escrito, interruptor):
 def main(persistente=False):
     """persistente=True (modo bandeja): decir 'adiós' no cierra el asistente, solo vuelve a esperar."""
     cfg = load_config()
+    import configuracion
+    cargadas = configuracion.cargar_claves_de_windows(cfg)
+    if cargadas:
+        print(f"[Claves leídas de Windows (esta terminal se abrió antes del setx): {', '.join(cargadas)}]")
     skills.configurar(cfg)
     voz.configurar(cfg)
     memoria.iniciar(cfg)
