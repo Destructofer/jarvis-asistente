@@ -142,11 +142,16 @@ Llena `conocimiento/proyecto.md` (problema, cómo funciona, tecnología, equipo,
 probables del jurado con sus respuestas) y `config.json → equipo` (nombre del equipo e
 integrantes con su rol). Con eso responde como integrante: "nosotros desarrollamos…".
 
+Jarvis **no inventa** datos del proyecto: si le preguntan algo que no está ahí (precios,
+cifras, clientes), dice que esa pregunta te la deja a ti. Por eso vale la pena escribir las
+respuestas a las preguntas típicas del jurado (costo, modelo de negocio, qué sigue).
+
 ## Qué le puedes decir
 
 | Dices | Qué pasa |
 |---|---|
-| "Hey Jarvis, preséntate con el público" | Saluda al instante, mira al público y comenta algo de lo que ve |
+| "Hey Jarvis, prepárate para la exposición" | Modo expositor, conexiones, tu software y la presentación listos; revisa cámara y micrófono: "Todos los sistemas en línea" |
+| "…preséntate con el público" | Saluda **al instante** (sin pasar por la IA), mira al público y comenta algo de lo que ve |
 | "…pon la presentación" / "inicia la presentación" | PowerPoint en pantalla completa |
 | "…siguiente" / "regresa" / "ve a la diapositiva 7" | Instantáneo, sin IA y sin hablar |
 | "…muéstrales el sistema" | Cambia a tu software (instantáneo) |
@@ -164,6 +169,7 @@ integrantes con su rol). Con eso responde como integrante: "nosotros desarrollam
 
 ## Guion sugerido (el momento "wow")
 
+0. **Antes de que entre el público**: "Hey Jarvis, prepárate para la exposición".
 1. **Entrada**: tú saludas y dices "Hey Jarvis, preséntate con el público". Jarvis saluda al
    instante, comenta algo real de lo que ve y te cede la palabra.
 2. **Contexto**: "Jarvis, pon la presentación". Avanzas con "siguiente" (o el clicker).
