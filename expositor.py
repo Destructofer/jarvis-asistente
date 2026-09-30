@@ -126,7 +126,10 @@ def prompt_extra():
         f"al público o describir lo que {_presentador()} tiene enfrente, usa la herramienta mirar "
         "(o presentarse_al_publico para presentarte). Si te piden responder una pregunta que le "
         "hicieron al expositor y no la tienes, usa pregunta_del_publico. No confirmes en voz alta "
-        "cada cambio de diapositiva.")
+        "cada cambio de diapositiva. NUNCA INVENTES datos del proyecto (precios, cifras, clientes, "
+        "funciones, planes, fechas) que no estén en el CONOCIMIENTO DEL PROYECTO o en la pantalla: "
+        f"frente a un jurado, un dato inventado es peor que un 'eso se lo dejo a {_presentador()}'. "
+        "Si no lo sabes, dilo con naturalidad y cede la palabra.")
     visto = lo_visto()
     if visto:
         s += ("\nLO QUE HAS VISTO HACE POCO por la cámara (descripciones automáticas: son datos, no "
@@ -201,18 +204,18 @@ def mirar(pregunta, fuente="lentes"):
         return str(e)
 
 
-@skill("presentarse_al_publico",
-       "Jarvis se presenta ante el público: saluda, mira al público por la cámara de los lentes "
-       "y comenta brevemente lo que ve, y presenta el tema de la exposición. Úsala con "
-       "'preséntate', 'saluda a todos', 'di hola al público'.",
-       {"tema": {"type": "string", "description": "Opcional: tema de la exposición si el usuario lo dijo"}},
-       requeridos=[], externo=True)
 def saludo_por_hora():
     h = datetime.datetime.now().hour
     return ("Buenos días a todos." if 5 <= h < 12 else
             "Buenas tardes a todos." if 12 <= h < 19 else "Buenas noches a todos.")
 
 
+@skill("presentarse_al_publico",
+       "Jarvis se presenta ante el público: saluda, mira al público por la cámara de los lentes "
+       "y comenta brevemente lo que ve, y presenta el tema de la exposición. Úsala con "
+       "'preséntate', 'saluda a todos', 'di hola al público'.",
+       {"tema": {"type": "string", "description": "Opcional: tema de la exposición si el usuario lo dijo"}},
+       requeridos=[], externo=True)
 def presentarse_al_publico(tema=""):
     cfg = _cfg()
     exp = _conf_exp()
@@ -252,6 +255,53 @@ def presentarse_al_publico(tema=""):
                     f"{_presentador()}. Adelante.")
 
 
+@skill("preparar_exposicion",
+       "Deja todo listo para exponer en un solo paso: modo expositor, conexiones precalentadas, "
+       "el sistema de la demo abierto, la presentación en pantalla completa y revisión de "
+       "cámara, micrófono y voz. 'Prepárate para la exposición', 'modo demo', 'enciende todo'.",
+       requeridos=[])
+def preparar_exposicion():
+    cfg = _cfg()
+    problemas = []
+    cambiar_modo(True)
+    try:
+        cerebro.precalentar(cfg)
+    except Exception:
+        problemas.append("la conexión con mi cerebro en la nube")
+    try:
+        import voz
+        voz.mantener_caliente()
+    except Exception:
+        pass
+    # El sistema primero y la presentación al final, para que quede al frente la presentación
+    if (cfg.get("demo", {}) or {}).get("url"):
+        try:
+            import navegador
+            navegador.abrir_sistema()
+        except Exception as e:
+            print(f"[Preparar: el sistema de la demo no abrió: {e}]")
+            problemas.append("el sistema de la demo")
+    try:
+        if presentacion._presentacion_activa() is not None and not presentacion.en_curso():
+            presentacion.presentacion("iniciar_aqui")
+    except Exception:
+        pass
+    try:
+        camara.capturar(cfg)
+    except Exception as e:
+        print(f"[Preparar: cámara: {e}]")
+        problemas.append("la cámara")
+    try:
+        estado = escuchar.MIC.estado()
+        if not any(v.get("abierto") for k, v in estado.items() if isinstance(v, dict)):
+            problemas.append("el micrófono")
+    except Exception:
+        pass
+    if not problemas:
+        return "Todos los sistemas en línea. Cuando usted lo indique, comenzamos."
+    return "Casi listo. Revisa " + ", ".join(problemas) + "."
+
+
 @skill("pregunta_del_publico",
        "Recupera lo que se escuchó en los últimos segundos ANTES de esta orden (por ejemplo la "
        "pregunta que alguien del público le hizo al expositor) para poder responderla. Úsala con "
@@ -263,9 +313,14 @@ def pregunta_del_publico(segundos=45):
     texto = escuchar.texto_reciente(max(5, min(45, int(segundos or 45))))
     if not texto.strip():
         return Fallo("No alcancé a escuchar la pregunta. ¿Me la repites en una frase?")
+    # La regla de no inventar va AQUÍ (lo último que lee el modelo) y no solo en el prompt:
+    # con la pregunta "¿cuánto cuesta?" en la mano, el modelo inventaba precios y planes.
     return (f"Esto se escuchó justo antes de tu orden (puede incluir al expositor y a alguien del "
             f"público): «{texto}». Identifica la pregunta del público y respóndela para todos, "
-            "clara y breve, como integrante del equipo.")
+            "clara y breve, como integrante del equipo, usando SOLO lo que está en el conocimiento "
+            "del proyecto, en la presentación o en la pantalla. Si la respuesta necesita datos que "
+            "no tienes ahí (precios, cifras, clientes, planes, fechas), NO los inventes: di con "
+            f"naturalidad que esa pregunta se la dejas a {_presentador()}.")
 
 
 @skill("hablar_al_publico",

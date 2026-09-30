@@ -144,7 +144,8 @@
     "llenar_campo": true,
     "iniciar_sesion_demo": true,
     "volver_atras": true,
-    "ensayar_demo": true
+    "ensayar_demo": true,
+    "preparar_exposicion": true
   },
   "mantenimiento_activo": true,
   "mantenimiento_intervalo_min": 30,

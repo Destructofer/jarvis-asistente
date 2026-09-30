@@ -58,8 +58,9 @@ def texto(cfg, max_chars=None):
     resultado = ("" if not cuerpo else
                  "\n\nCONOCIMIENTO DEL PROYECTO QUE SE EXPONE (formas parte de este equipo: habla "
                  "del proyecto en primera persona del plural, 'nosotros'; úsalo para responder "
-                 "preguntas del público y del jurado; si algo no está aquí, dilo con honestidad "
-                 "y ofrece que el expositor lo amplíe):\n" + cuerpo)
+                 "preguntas del público y del jurado. Es TODO lo que sabes del proyecto: si una "
+                 "pregunta pide datos que no están aquí —precios, cifras, clientes, planes— no los "
+                 "inventes; dilo con honestidad y ofrece que el expositor lo amplíe):\n" + cuerpo)
     _cache.update(clave=clave, texto=resultado)
     return resultado
 

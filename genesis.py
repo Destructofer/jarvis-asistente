@@ -122,6 +122,12 @@ MOSTRAR_SISTEMA = {"muestrales el sistema", "muestra el sistema", "cambia al sis
                    "muestra la plataforma", "abre la plataforma", "vamos a la plataforma",
                    "regresa al sistema", "vuelve al sistema", "regresa a la pagina",
                    "vuelve a la pagina"}
+# El primer momento en que todos escuchan a Jarvis: sin pasar por el modelo, el saludo suena
+# al instante (pregenerado) mientras la visión mira al público
+PRESENTARSE = {"presentate", "presentate con el publico", "presentate al publico",
+               "presentate ante el publico", "saluda al publico", "saluda a todos",
+               "saluda al jurado", "di hola al publico", "saludalos", "presentate por favor",
+               "presentate con todos", "presentate con el jurado"}
 NUMEROS = {"uno": 1, "una": 1, "primera": 1, "dos": 2, "segunda": 2, "tres": 3, "tercera": 3,
            "cuatro": 4, "cuarta": 4, "cinco": 5, "quinta": 5, "seis": 6, "sexta": 6,
            "siete": 7, "septima": 7, "ocho": 8, "octava": 8, "nueve": 9, "novena": 9,
@@ -165,8 +171,9 @@ GRUPOS = [
     (r"busca|google|internet|investiga|en la web", ["buscar_web", "buscar_archivo"]),
     (r"presentaci|diapositiva|power ?point|lamina|slide|pptx|expon",
      ["abrir_presentacion", "presentacion", "explicar_diapositiva", "mostrar_presentacion"]),
-    (r"public|expositor|presentate|presentarte|audiencia|anuncia|saluda|jurado|hackathon|pregunt|escuchaste|contesta|responde|agregar|opinas",
-     ["modo_expositor", "presentarse_al_publico", "hablar_al_publico", "pregunta_del_publico"]),
+    (r"public|expositor|presentate|presentarte|audiencia|anuncia|saluda|jurado|hackathon|pregunt|escuchaste|contesta|responde|agregar|opinas|preparate|prepara|exposicion|enciende todo|modo demo",
+     ["modo_expositor", "presentarse_al_publico", "hablar_al_publico", "pregunta_del_publico",
+      "preparar_exposicion"]),
     (r"sistema|pagina|modulo|menu|software|plataforma|recorr|explora|navega|login|sesion|formulario|campo|tour|seccion|opcion|resalta|senala",
      ["abrir_sistema", "ir_a_modulo", "recorrer_modulos", "explicar_pantalla", "resaltar",
       "llenar_campo", "iniciar_sesion_demo", "ensayar_demo", "volver_atras"]),
@@ -526,10 +533,14 @@ def atajo_presentacion(texto):
 
 
 def atajo_sistema(texto):
-    """'Muéstrales el sistema' → el navegador de la demo, al instante (sin el modelo)."""
+    """'Muéstrales el sistema' → el navegador de la demo; 'preséntate con el público' → la
+    presentación de Jarvis. Al instante, sin pasar por el modelo."""
+    t = _limpia_orden(texto)
+    if t in PRESENTARSE and skills.existe("presentarse_al_publico") and skills.activa("presentarse_al_publico"):
+        return "presentarse_al_publico", {}
     if navegador is None or not skills.existe("abrir_sistema") or not skills.disponible("abrir_sistema"):
         return None
-    if _limpia_orden(texto) in MOSTRAR_SISTEMA:
+    if t in MOSTRAR_SISTEMA:
         return "abrir_sistema", {}
     return None
 
@@ -973,6 +984,14 @@ def _mantener_conexiones(cfg):
     threading.Thread(target=ciclo, daemon=True, name="conexiones").start()
 
 
+def _recordar_atajo(history, user, reply):
+    """Lo que se dijo por un atajo también entra a la conversación: si Jarvis se presentó sin
+    pasar por el modelo, después debe saber qué dijo ("¿algo que agregar?")."""
+    if reply and not isinstance(reply, Callado):
+        history.append({"role": "user", "content": user})
+        history.append({"role": "assistant", "content": str(reply)})
+
+
 def _procesar(cfg, history, user, escrito, interruptor):
     """Una orden completa: atajo o modelo, voz, y registro de tiempos."""
     _actividad["ultima"] = time.time()
@@ -995,6 +1014,7 @@ def _procesar(cfg, history, user, escrito, interruptor):
         if rapido:
             reply = ejecutar_herramienta(cfg, *rapido)
             _entregar(cfg, turno, reply)
+            _recordar_atajo(history, user, reply)
             return
         atajo = buscar_atajo(user)
         if atajo:
@@ -1002,6 +1022,7 @@ def _procesar(cfg, history, user, escrito, interruptor):
             print(f"{_nombre(cfg)}: {reply}\n")
             turno.decir("Captura guardada." if atajo == "captura_pantalla"
                         and str(reply).startswith("Captura") else reply)
+            _recordar_atajo(history, user, reply)
             return
 
         # La memoria, el modo expositor o la diapositiva actual pueden haber cambiado desde el

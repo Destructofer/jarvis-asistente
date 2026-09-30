@@ -29,6 +29,26 @@ import skills  # noqa: E402
 import voz  # noqa: E402
 
 
+class Registro(unittest.TestCase):
+    def test_cada_skill_apunta_a_su_funcion(self):
+        """Un @skill pegado a la función equivocada (pasó al insertar una función entre el
+        decorador y la suya) solo se notaba al usarla en vivo."""
+        import expositor  # noqa: F401
+        import graph  # noqa: F401
+        import multimedia  # noqa: F401
+        import teams  # noqa: F401
+        mal = [n for n, s in skills._SKILLS.items()
+               if s["fn"].__name__ not in (n, "skill_" + n)]
+        self.assertEqual(mal, [])
+
+    def test_parametros_coinciden_con_la_funcion(self):
+        import inspect
+        for n, s in skills._SKILLS.items():
+            firma = inspect.signature(s["fn"]).parameters
+            for p in s["params"]:
+                self.assertIn(p, firma, f"{n}: el parámetro '{p}' no existe en la función")
+
+
 class Atajos(unittest.TestCase):
     def test_frases_largas_ya_no_disparan_atajos(self):
         for frase in ["¿Por qué se bloquea el equipo tan seguido?",
@@ -45,6 +65,11 @@ class Atajos(unittest.TestCase):
         self.assertEqual(genesis.buscar_atajo("Toma una captura de pantalla"), "captura_pantalla")
         self.assertEqual(genesis.buscar_atajo("Bloquea la pantalla"), "bloquear_pantalla")
 
+    def test_presentarse_es_instantaneo(self):
+        for frase in ["Jarvis, preséntate con el público", "Preséntate, por favor", "Saluda a todos"]:
+            self.assertEqual(genesis.atajo_sistema(frase), ("presentarse_al_publico", {}), frase)
+        self.assertIsNone(genesis.atajo_sistema("preséntate con el público y luego abre Chrome"))
+
     def test_salir_con_acento(self):
         for frase in ["Adiós.", "adios", "Hasta luego.", "Jarvis, adiós"]:
             self.assertIn(genesis._limpia_orden(frase), genesis.SALIDAS, frase)
@@ -52,11 +77,12 @@ class Atajos(unittest.TestCase):
 
 class Presentacion(unittest.TestCase):
     def setUp(self):
-        self._en_curso = presentacion.en_curso
+        self._orig = (presentacion.en_curso, presentacion._presentacion_activa)
         presentacion.en_curso = lambda: True
+        presentacion._presentacion_activa = lambda: None
 
     def tearDown(self):
-        presentacion.en_curso = self._en_curso
+        presentacion.en_curso, presentacion._presentacion_activa = self._orig
 
     def test_atajos_de_diapositivas(self):
         casos = {
@@ -77,6 +103,13 @@ class Presentacion(unittest.TestCase):
     def test_sin_presentacion_decide_el_modelo(self):
         presentacion.en_curso = lambda: False
         self.assertIsNone(genesis.atajo_presentacion("siguiente"))
+
+    def test_abierta_sin_pantalla_completa_responde_clara(self):
+        """Antes iba al modelo, que una vez corrió una rutina por un 'siguiente'."""
+        presentacion.en_curso = lambda: False
+        presentacion._presentacion_activa = lambda: object()
+        self.assertEqual(genesis.atajo_presentacion("siguiente"),
+                         ("presentacion", {"accion": "siguiente"}))
 
 
 class Confirmacion(unittest.TestCase):

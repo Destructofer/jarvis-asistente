@@ -468,12 +468,6 @@ def cerrar_app(nombre, forzar=False):
     return Fallo(f"No encontré ninguna app o ventana abierta parecida a '{nombre}'.")
 
 
-# ---------- Skill ----------
-@skill("abrir_app",
-       "Abre cualquier aplicación o programa instalado en el equipo por su nombre, aunque el "
-       "nombre sea aproximado (whatsapp, spotify, word, excel, opera, discord, calculadora...). "
-       "Pásale el nombre tal como lo dijo el usuario.",
-       {"nombre": {"type": "string", "description": "Nombre de la aplicación"}})
 def _destino_real(destino):
     """Para un acceso directo (.lnk), el programa al que apunta; si no, el mismo destino. Así
     un acceso directo a PowerShell del menú Inicio también pide confirmación."""
@@ -488,6 +482,12 @@ def _destino_real(destino):
         return destino
 
 
+# ---------- Skill ----------
+@skill("abrir_app",
+       "Abre cualquier aplicación o programa instalado en el equipo por su nombre, aunque el "
+       "nombre sea aproximado (whatsapp, spotify, word, excel, opera, discord, calculadora...). "
+       "Pásale el nombre tal como lo dijo el usuario.",
+       {"nombre": {"type": "string", "description": "Nombre de la aplicación"}})
 def abrir_app(nombre):
     mejor = buscar_app(nombre)
     if mejor is None and not _indice:
