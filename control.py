@@ -187,7 +187,7 @@ def traer_al_frente(hwnd):
 def enfocar_ventana(nombre):
     h, titulo, p = buscar_ventana(nombre)
     if h is None or p < apps.UMBRAL_INTENTO:
-        return Fallo(f"No tengo ninguna ventana abierta parecida a '{nombre}'. Puedo abrirla con abrir_app.")
+        return Fallo(f"No tengo ninguna ventana abierta parecida a '{nombre}'. Si quieres, la abro.")
     if not traer_al_frente(h):
         return Fallo(f"Encontré '{titulo}' pero Windows no me dejó traerla al frente.")
     return f"Listo, en {titulo}."
@@ -431,7 +431,7 @@ def clic_en(texto, ventana=""):
         time.sleep(1.2)
     else:
         return Fallo(f"No encontré nada parecido a '{texto}' en {titulo}. "
-                     f"Veo {len(elementos)} elementos; puedo leerte la ventana con leer_ventana.")
+                     f"Veo {len(elementos)} elementos; si quieres, te leo lo que hay en la ventana.")
 
     if es_peligroso(nombre):
         if memoria.pedir_confirmacion is None or not memoria.pedir_confirmacion(
@@ -537,7 +537,8 @@ def rutina(nombre):
         resultado = ejecutor(accion, args)
         print(f"[Rutina {clave} · paso {i}] {accion} -> {str(resultado)[:120]}")
         if fallo(resultado) and not seguir:
-            return Fallo(f"La rutina '{clave}' se detuvo en el paso {i} ({accion}): {resultado}")
+            # Se dice en voz alta: sin nombres internos de herramientas
+            return Fallo(f"La rutina '{clave}' se detuvo en el paso {i}: {resultado}")
     fin = f"Rutina '{clave}' completada."
     return Callado(fin) if hablo else fin
 

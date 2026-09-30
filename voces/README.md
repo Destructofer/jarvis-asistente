@@ -1,13 +1,17 @@
-# Voz de Genesis
+# Voz local de Jarvis (Piper)
 
-Esta carpeta debe tener dos archivos que **no están en el repositorio** (pesan ~63 MB y se
-comparten aparte, por ejemplo por Drive o USB):
+Esta carpeta lleva la voz local (sin internet) que Jarvis usa si fallan ElevenLabs y Edge.
+Los archivos **no están en el repositorio** (pesan ~63 MB):
 
 - `es_MX-claude-high.onnx`
 - `es_MX-claude-high.onnx.json`
 
-Pídeselos a quien te compartió el proyecto y ponlos aquí, en `voces/`.
+Es una voz pública del proyecto Piper. Para bajarla (PowerShell, desde esta carpeta):
 
-Si no los tienes, Genesis funciona igual: cuando no encuentra el modelo, usa automáticamente
-la voz de Windows en español como respaldo (más robótica, pero funcional). No hay que
-configurar nada para ese modo; es el comportamiento por defecto si esta carpeta está vacía.
+```powershell
+$base = "https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_MX/claude/high"
+Invoke-WebRequest "$base/es_MX-claude-high.onnx" -OutFile es_MX-claude-high.onnx
+Invoke-WebRequest "$base/es_MX-claude-high.onnx.json" -OutFile es_MX-claude-high.onnx.json
+```
+
+Si no están, Jarvis funciona igual: usa la voz de Windows como último respaldo (más robótica).

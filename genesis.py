@@ -513,7 +513,15 @@ def atajo_presentacion(texto):
     if args is None:
         return None
     if args["accion"] != "iniciar" and not presentacion.en_curso():
-        return None  # sin presentación en pantalla completa, que decida el modelo
+        # Con una presentación abierta (pero no en pantalla completa) la orden es clara: la
+        # skill contesta "no está en pantalla completa". Antes iba al modelo, que adivinaba
+        # (una vez corrió la rutina "regresar a la presentación" por un "siguiente").
+        try:
+            abierta = presentacion._presentacion_activa() is not None
+        except Exception:
+            abierta = False
+        if not abierta or (navegador is not None and navegador.activo()):
+            return None  # sin presentación, o con el sistema de la demo al frente: decide el modelo
     return "presentacion", args
 
 

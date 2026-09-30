@@ -70,7 +70,7 @@ def configurar(cfg):
 def _limpiar(texto):
     """Quita símbolos de markdown y espacios raros para que no los lea en voz alta."""
     texto = str(texto or "").replace(" ", " ").replace("\xa0", " ").replace("‑", "-")
-    texto = re.sub(r"[*_#`>~|]", "", texto)
+    texto = re.sub(r"[*#`>~|]", "", texto).replace("_", " ")  # "abrir_app" -> "abrir app"
     texto = re.sub(r"\s+", " ", texto)
     return texto.strip()
 

@@ -344,14 +344,14 @@ def cancelar_apagado():
        riesgo="confirmar", pregunta="¿Seguro que quieres apagar el equipo?")
 def apagar_equipo():
     subprocess.run(["shutdown", "/s", "/t", "30"], creationflags=SIN_VENTANA)
-    return "El equipo se apagará en 30 segundos. Se puede cancelar con cancelar_apagado."
+    return "El equipo se apagará en 30 segundos. Si cambias de opinión, dime que cancele el apagado."
 
 
 @skill("reiniciar_equipo", "Reinicia el equipo en 30 segundos.",
        riesgo="confirmar", pregunta="¿Seguro que quieres reiniciar el equipo?")
 def reiniciar_equipo():
     subprocess.run(["shutdown", "/r", "/t", "30"], creationflags=SIN_VENTANA)
-    return "El equipo se reiniciará en 30 segundos. Se puede cancelar con cancelar_apagado."
+    return "El equipo se reiniciará en 30 segundos. Si cambias de opinión, dime que cancele el reinicio."
 
 
 @skill("wifi",
