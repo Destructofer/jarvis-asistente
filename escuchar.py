@@ -48,6 +48,12 @@ CANCELAR = threading.Event()
 # activación, para que se pueda usar por teclado aunque el micrófono no esté oyendo nada.
 DESPERTAR = threading.Event()
 
+# Lo activa genesis.py cuando Jarvis habló por iniciativa propia (el observador preguntó si
+# hay dudas): la espera de la palabra de activación se corta para escuchar la respuesta de
+# la persona sin que nadie tenga que decir "Jarvis".
+CONVERSAR = threading.Event()
+A_CONVERSAR = object()   # lo que devuelven esperar_palabra / esperar_oww en ese caso
+
 # Micrófono principal y de respaldo (índices de sounddevice). None en el principal = el de
 # Windows. Se fijan desde config.json → mic_dispositivo / mic_respaldo con iniciar().
 DISPOSITIVO = None
@@ -350,8 +356,31 @@ def calibrar_umbral(minimo=0.0025, segundos=2.0):
 
 
 # ---------- Grabar una frase ----------
-def _grabar_de_sub(sub, umbral, silencio_seg, max_seg, espera_seg, previo_inicial=None):
-    """Graba de una suscripción: espera voz, graba y corta al quedarse en silencio."""
+def _jarvis_habla():
+    try:
+        import voz
+        return voz.HABLANDO.is_set()
+    except Exception:
+        return False
+
+
+def en_pausa(segundos=1.3, umbral=None):
+    """True si en los últimos 'segundos' nadie habló cerca del micrófono (el expositor hizo
+    una pausa): para que Jarvis no lo interrumpa a media frase."""
+    umbral = float(umbral if umbral is not None else (_cfg().get("mic_umbral", 0.004) or 0.004))
+    audio = MIC.reciente(segundos)
+    if len(audio) < int(segundos * SAMPLE_RATE * 0.8):
+        return False  # sin audio suficiente (micrófono recién abierto): mejor no arriesgar
+    n = int(0.1 * SAMPLE_RATE)
+    return all(float(np.sqrt(np.mean(audio[i:i + n] ** 2))) <= umbral * 1.2
+               for i in range(0, len(audio) - n + 1, n))
+
+
+def _grabar_de_sub(sub, umbral, silencio_seg, max_seg, espera_seg, previo_inicial=None,
+                   atento_a_conversar=False):
+    """Graba de una suscripción: espera voz, graba y corta al quedarse en silencio.
+    atento_a_conversar: la espera de la palabra de activación se corta si genesis.py pide
+    escuchar una respuesta sin palabra (CONVERSAR)."""
     n_previo = max(3, int(0.3 / SEG_BLOQUE))
     previo = deque(previo_inicial or [], maxlen=max(n_previo, len(previo_inicial or [])))
     frames = []
@@ -360,7 +389,7 @@ def _grabar_de_sub(sub, umbral, silencio_seg, max_seg, espera_seg, previo_inicia
     inicio = time.time()
     inicio_voz = None
     while True:
-        if CANCELAR.is_set() or DESPERTAR.is_set():
+        if CANCELAR.is_set() or DESPERTAR.is_set() or (atento_a_conversar and CONVERSAR.is_set()):
             return None
         try:
             t, data = sub.get(timeout=0.5)
@@ -368,7 +397,9 @@ def _grabar_de_sub(sub, umbral, silencio_seg, max_seg, espera_seg, previo_inicia
             if not hablando and time.time() - inicio > espera_seg:
                 return None
             continue
-        if t < IGNORAR_HASTA:
+        # Mientras Jarvis habla (también cuando lo hace por iniciativa propia, desde otro hilo)
+        # no se graba: si no, transcribía su propia voz como si fuera una orden.
+        if t < IGNORAR_HASTA or (not hablando and _jarvis_habla()):
             inicio = time.time()  # el tiempo de espera cuenta desde que se deja de ignorar
             previo.clear()
             continue
@@ -597,12 +628,16 @@ def esperar_palabra(palabras, modelo_wake="base", umbral=0.004, pista="Jarvis"):
             if DESPERTAR.is_set():
                 DESPERTAR.clear()
                 return None  # obtener_entrada lo toma como "abre la ventana para escribir"
+            if CONVERSAR.is_set():
+                CONVERSAR.clear()
+                return A_CONVERSAR
             if PAUSA.is_set():
                 time.sleep(0.5)
                 continue
-            audio = _grabar_de_sub(sub, umbral, SILENCIO_SEG, max_seg=8, espera_seg=15)
+            audio = _grabar_de_sub(sub, umbral, SILENCIO_SEG, max_seg=8, espera_seg=15,
+                                   atento_a_conversar=True)
             if audio is None:
-                if DESPERTAR.is_set():
+                if DESPERTAR.is_set() or CONVERSAR.is_set():
                     continue
                 intentos_sin_voz += 1
                 if intentos_sin_voz % 2 == 0 and umbral > 0.003:
@@ -667,6 +702,9 @@ def esperar_oww(modelo="hey_jarvis", sensibilidad=0.5, umbral_voz=0.004,
             if DESPERTAR.is_set():
                 DESPERTAR.clear()
                 return None
+            if CONVERSAR.is_set():
+                CONVERSAR.clear()
+                return A_CONVERSAR
             if PAUSA.is_set():
                 time.sleep(0.5)
                 continue
@@ -674,7 +712,7 @@ def esperar_oww(modelo="hey_jarvis", sensibilidad=0.5, umbral_voz=0.004,
                 t, data = sub.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if t < IGNORAR_HASTA:
+            if t < IGNORAR_HASTA or _jarvis_habla():
                 detector.reset()
                 previo.clear()
                 continue

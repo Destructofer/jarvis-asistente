@@ -61,7 +61,9 @@ def cambiar_modo(valor=True):
     ACTIVO = bool(valor)
     if ACTIVO:
         threading.Thread(target=camara.calentar, args=(_cfg(),), daemon=True).start()
-        _iniciar_diario()
+        import observador
+        if not observador.iniciar():  # el observador ya anota la escena en el diario
+            _iniciar_diario()
     hud.modo_expositor(ACTIVO)
     for fn in _cambios:
         try:

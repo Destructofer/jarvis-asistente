@@ -147,7 +147,8 @@
     "iniciar_sesion_demo": true,
     "volver_atras": true,
     "ensayar_demo": true,
-    "preparar_exposicion": true
+    "preparar_exposicion": true,
+    "observar_publico": true
   },
   "mantenimiento_activo": true,
   "mantenimiento_intervalo_min": 30,
@@ -162,6 +163,20 @@
     "presentacion_extra": "",
     "saludo": "",
     "diario_visual_seg": 0
+  },
+  "observador": {
+    "activo": true,
+    "cada_seg": 8,
+    "umbral_duda": 0.7,
+    "pausa_entre_intervenciones_seg": 60,
+    "pausa_seg": 1.3,
+    "espera_pausa_seg": 8,
+    "lado": 640
+  },
+  "complementar": {
+    "activo": true,
+    "cada_seg": 45,
+    "espera_pausa_seg": 5
   },
   "equipo": {
     "nombre": "",

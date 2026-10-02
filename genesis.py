@@ -19,6 +19,7 @@ import hud
 import mantenimiento
 import memoria
 import multimedia  # noqa: F401  (registra las skills youtube y spotify)
+import observador  # observa al público en modo expositor (dudas, con quién platicas)
 import panel
 import presentacion
 import recordatorios
@@ -60,6 +61,20 @@ REGLA_ORDENES = (
 # mucho con la audiencia y Jarvis no debe contestar eso.
 MARCA_SEGUIMIENTO = "[sin llamarte por tu nombre] "
 MARCA_IGNORAR = "<ignorar>"
+MARCA_COMPLEMENTAR = "<complementar>"
+# Cuando el expositor le explica algo al público (o a alguien de frente), Jarvis NO lo toma
+# como orden: o se queda callado, o (rara vez) aporta un dato que faltó, en una pausa.
+REGLA_COMPLEMENTAR = (
+    " EXCEPCIÓN QUE MANDA SOBRE LO ANTERIOR: cuando el expositor le explica algo al público o a "
+    "una persona, revisa lo que dijo contra el CONOCIMIENTO DEL PROYECTO. Si dijo un DATO "
+    "EQUIVOCADO (un precio, una cifra, una función que no es así), responde " + MARCA_COMPLEMENTAR +
+    " seguido de UNA frase corta y con tacto que lo corrija (\"Si me permites, el costo es de...\"). "
+    "Si omitió algo clave de lo que está explicando, también puedes complementarlo así, rara vez. "
+    "Si lo que dijo es correcto o no tienes con qué compararlo, " + MARCA_IGNORAR + ". Nunca "
+    "inventes datos ni repitas lo que ya dijo.")
+# Lo que Jarvis le dice al público por iniciativa propia (el observador vio una duda)
+MARCA_TRAS_PREGUNTA = (" Si en tu último mensaje le preguntaste algo al público y lo que se oye "
+                       "parece la respuesta o la duda de esa persona, contéstala.")
 REGLA_SEGUIMIENTO = (
     "\n\nCONVERSACIÓN SEGUIDA: los mensajes que empiezan con " + MARCA_SEGUIMIENTO.strip() +
     " los dijo el usuario sin decir tu nombre, justo después de que hablaste. Si van dirigidos "
@@ -213,9 +228,9 @@ GRUPOS = [
     (r"busca|google|internet|investiga|en la web", ["buscar_web", "buscar_archivo"]),
     (r"presentaci|diapositiva|power ?point|lamina|slide|pptx|expon",
      ["abrir_presentacion", "presentacion", "explicar_diapositiva", "mostrar_presentacion"]),
-    (r"public|expositor|presentate|presentarte|audiencia|anuncia|saluda|jurado|hackathon|pregunt|escuchaste|contesta|responde|agregar|opinas|preparate|prepara|exposicion|enciende todo|modo demo",
+    (r"public|expositor|presentate|presentarte|audiencia|anuncia|saluda|jurado|hackathon|pregunt|escuchaste|contesta|responde|agregar|opinas|preparate|prepara|exposicion|enciende todo|modo demo|observ",
      ["modo_expositor", "presentarse_al_publico", "hablar_al_publico", "pregunta_del_publico",
-      "preparar_exposicion"]),
+      "preparar_exposicion", "observar_publico"]),
     (r"sistema|pagina|modulo|menu|software|plataforma|recorr|explora|navega|login|sesion|formulario|campo|tour|seccion|opcion|resalta|senala",
      ["abrir_sistema", "ir_a_modulo", "recorrer_modulos", "explicar_pantalla", "resaltar",
       "llenar_campo", "iniciar_sesion_demo", "ensayar_demo", "volver_atras"]),
@@ -332,9 +347,23 @@ class Ignorado(str):
     """Lo que se dijo sin llamarlo no era para Jarvis: no contesta ni lo guarda."""
 
 
+class Complemento(str):
+    """Algo que Jarvis quiere agregar a lo que el expositor le explicaba a alguien: se dice
+    solo en una pausa del expositor (si sigue hablando, se descarta)."""
+
+
 def es_ignorar(texto):
     t = str(texto).strip().lower()
     return t.startswith(MARCA_IGNORAR) or t.startswith("ignorar") or t.startswith("[ignorar")
+
+
+def es_complemento(texto):
+    t = str(texto).strip().lower()
+    return t.startswith(MARCA_COMPLEMENTAR) or t.startswith("complementar") or t.startswith("[complementar")
+
+
+def quitar_marca_complemento(texto):
+    return re.sub(r"^\s*[<\[]?complementar[>\]:]?\s*", "", str(texto), flags=re.I)
 
 
 class Turno:
@@ -360,6 +389,7 @@ class Turno:
         # era para él. Se retiene el principio del texto hasta saberlo, para no decir nada.
         self._puerta = "" if seguimiento else None
         self.ignorado = False
+        self.complemento = None   # texto de un <complementar> (se dice en una pausa, no ya)
 
     # --- voz ---
     def _nueva(self):
@@ -381,14 +411,22 @@ class Turno:
             self.t_primer_texto = time.time()
         if self.ignorado:
             return
+        if self.complemento is not None:
+            self.complemento += fragmento  # se guarda: se dirá solo cuando el expositor haga pausa
+            return
         if self._puerta is not None:
             self._puerta += fragmento
             inicio = self._puerta.lstrip().lower()
             if es_ignorar(inicio):
                 self.ignorado = True
                 return
-            if len(inicio) < 3 or any(m.startswith(inicio) for m in (MARCA_IGNORAR, "ignorar", "[ignorar")):
-                return  # todavía puede ser la marca: se espera el siguiente pedazo
+            if es_complemento(inicio):
+                self.complemento = quitar_marca_complemento(self._puerta)
+                self._puerta = None
+                return
+            marcas = (MARCA_IGNORAR, "ignorar", "[ignorar", MARCA_COMPLEMENTAR, "complementar", "[complementar")
+            if len(inicio) < 3 or any(m.startswith(inicio) for m in marcas):
+                return  # todavía puede ser una marca: se espera el siguiente pedazo
             fragmento, self._puerta = self._puerta, None
         with self._lock:
             self.cancelar_relleno()
@@ -402,6 +440,9 @@ class Turno:
         if self._puerta and not self.ignorado and not self.interrumpido:  # respuesta corta retenida
             if es_ignorar(self._puerta.lstrip().lower()):
                 self.ignorado = True
+            elif es_complemento(self._puerta.lstrip().lower()):
+                self.complemento = quitar_marca_complemento(self._puerta)
+                self._puerta = None
             else:
                 pendiente, self._puerta = self._puerta, None
                 self.agregar(pendiente)
@@ -740,6 +781,8 @@ def obtener_entrada(cfg):
                   "uso Whisper para la palabra de activación]")
             cfg["motor_activacion"] = "whisper"
             return obtener_entrada(cfg)
+        if texto is escuchar.A_CONVERSAR:
+            return obtener_entrada(cfg)  # Jarvis preguntó algo por su cuenta: a escuchar la respuesta
         if texto is None:
             return _entrada_mixta(cfg, umbral)
         if texto:
@@ -752,11 +795,14 @@ def obtener_entrada(cfg):
     hud.estado("inactivo")
     r = esperar_palabra(_palabras(cfg), cfg.get("whisper_modelo_wake", "base"), umbral,
                         _nombre(cfg))
+    if r is escuchar.A_CONVERSAR:
+        return obtener_entrada(cfg)  # Jarvis preguntó algo por su cuenta: a escuchar la respuesta
     hud.estado("escuchando")
-    pitido(cfg)
     if r is None:  # despertado desde la bandeja ("Escribir una orden"): directo a la ventana
         return _entrada_mixta(cfg, umbral)
     resto, audio = r
+    if len(resto) < 4:
+        pitido(cfg)  # solo si dijo "Jarvis" a secas: si ya dijo la orden, el bip solo estorba
     if len(resto) >= 4:  # ya dijo la orden junto con la palabra
         # El modelo "base" solo sirve para reconocer la palabra: la orden se vuelve a
         # transcribir con el bueno (nube o 'small'), que entiende mucho mejor el español.
@@ -989,6 +1035,11 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
 
         if not r["tool_calls"] and (es_ignorar(r["content"] or "") or (turno is not None and turno.ignorado)):
             return Ignorado("")
+        if not r["tool_calls"] and (turno is not None and turno.complemento is not None
+                                    or es_complemento(r["content"] or "")):
+            texto = turno.complemento if turno is not None and turno.complemento is not None \
+                else quitar_marca_complemento(r["content"])
+            return Complemento(limpiar(texto))
 
         if not r["tool_calls"]:
             texto = limpiar(r["content"])
@@ -1053,6 +1104,7 @@ def _prompt(cfg):
             "exposición para la audiencia ('gracias por venir', 'empecemos con...', 'como pueden "
             "ver', 'les voy a mostrar', 'esto nos permitió...') NO es para ti, aunque hable del "
             "proyecto: " + MARCA_IGNORAR + ". Ante la duda, " + MARCA_IGNORAR + "."
+            + (REGLA_COMPLEMENTAR if _complementar_activo(cfg) else "") + MARCA_TRAS_PREGUNTA
             if expositor.ACTIVO else
             " Fuera de exposición casi siempre te hablan a ti: responde SIEMPRE (preguntas, "
             "órdenes, seguir la plática), salvo que sea EVIDENTE que le habla a otra persona "
@@ -1153,14 +1205,53 @@ def _recordar_atajo(history, user, reply):
 
 
 _ultimo_turno = {"ignorado": False}
+_ocupado = {"turno": False}        # hay una orden en curso (el observador no debe hablar)
+_notas = []                        # lo que Jarvis dijo por iniciativa propia, para la conversación
+_complemento = {"ultimo": 0.0}
 
 
-def _procesar(cfg, history, user, escrito, interruptor, seguimiento=False):
+def _conf_complementar(cfg):
+    return cfg.get("complementar", {}) or {}
+
+
+def _complementar_activo(cfg):
+    return bool(_conf_complementar(cfg).get("activo", True))
+
+
+def _puede_complementar(cfg):
+    """Complementar es valioso una vez; cada rato, molesta: una pausa mínima entre uno y otro."""
+    return (_complementar_activo(cfg) and time.time() - _complemento["ultimo"]
+            >= float(_conf_complementar(cfg).get("cada_seg", 45)))
+
+
+def puede_hablar_por_su_cuenta():
+    """Para el observador: Jarvis está libre (sin orden en curso ni voz sonando)."""
+    return not _ocupado["turno"] and not voz.HABLANDO.is_set()
+
+
+def intervenir(cfg, texto):
+    """Jarvis habla por iniciativa propia (el observador vio una duda): lo dice al público, lo
+    anota en la conversación y se queda escuchando la respuesta sin que nadie diga "Jarvis"."""
+    _notas.append({"role": "assistant", "content": texto})
+    decir(cfg, texto, publico=True)
+    abrir_conversacion(cfg)
+    escuchar.CONVERSAR.set()  # corta la espera de la palabra de activación
+
+
+def _procesar(cfg, history, user, escrito, interruptor, seguimiento=False, al_publico=False):
     """Una orden completa: atajo o modelo, voz, y registro de tiempos.
     seguimiento=True: se dijo en el modo conversación, sin decir "Jarvis"; el modelo puede
     decidir que no era para él (_ultimo_turno["ignorado"])."""
     _actividad["ultima"] = time.time()
     _ultimo_turno["ignorado"] = False
+    _ocupado["turno"] = True
+    try:
+        return _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_publico)
+    finally:
+        _ocupado["turno"] = False
+
+
+def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_publico):
     turno = Turno(cfg, user, seguimiento=seguimiento)
     skills.INTERRUPCION.clear()
     t_inicio = time.time()
@@ -1196,8 +1287,18 @@ def _procesar(cfg, history, user, escrito, interruptor, seguimiento=False):
         hud.estado("pensando")
         history[0]["content"] = _prompt(cfg)
         _compactar(history)
+        while _notas:  # lo que Jarvis dijo por su cuenta (p. ej. "¿te quedó alguna duda?")
+            history.append(_notas.pop(0))
         antes = len(history)
-        history.append({"role": "user", "content": (MARCA_SEGUIMIENTO + user) if seguimiento else user})
+        if seguimiento:
+            import observador
+            pista = observador.contexto_marca()
+            if al_publico:
+                pista += "(por cómo lo dijo, le está hablando al público) "
+            contenido = MARCA_SEGUIMIENTO + pista + user
+        else:
+            contenido = user
+        history.append({"role": "user", "content": contenido})
         if not seguimiento:  # un "Claro." antes de decidir que no era para él sonaría raro
             turno.programar_relleno(float(cfg.get("relleno_ms", 1200)) / 1000)
         try:
@@ -1226,6 +1327,26 @@ def _procesar(cfg, history, user, escrito, interruptor, seguimiento=False):
             del history[antes:]  # no era para Jarvis: ni contesta ni lo recuerda
             _ultimo_turno["ignorado"] = True
             print("[No era para mí: me quedo callado]\n")
+            return
+        if isinstance(reply, Complemento):
+            if not reply or not _puede_complementar(cfg):
+                del history[antes:]
+                _ultimo_turno["ignorado"] = True
+                print("[Pensé en complementar, pero me quedo callado]\n")
+                return
+            # Solo en una pausa del expositor: si sigue hablando, se descarta (no se le
+            # interrumpe a media explicación)
+            limite = time.time() + float(_conf_complementar(cfg).get("espera_pausa_seg", 5))
+            while time.time() < limite and not escuchar.en_pausa(1.3):
+                time.sleep(0.2)
+            if not escuchar.en_pausa(1.3):
+                del history[antes:]
+                _ultimo_turno["ignorado"] = True
+                print(f"[Iba a complementar, pero sigues hablando: {reply}]\n")
+                return
+            _complemento["ultimo"] = time.time()
+            print(f"[Complemento] {reply}")
+            turno.decir(reply)
             return
         memoria.guardar_mensaje("user", user)
         memoria.guardar_mensaje("assistant", str(reply))
@@ -1267,6 +1388,8 @@ def main(persistente=False):
     control.hablar = lambda texto: decir(cfg, texto)
     expositor.hablar_publico = lambda texto: decir(cfg, texto, publico=True)
     expositor._hablar_normal = lambda texto: decir(cfg, texto)
+    observador.puede_hablar = puede_hablar_por_su_cuenta
+    observador.intervenir = lambda texto: intervenir(cfg, texto)
     if navegador is not None:
         navegador.configurar(cfg, hablar=lambda texto: decir(cfg, texto),
                              confirmar=lambda pregunta: confirmar(cfg, pregunta))
@@ -1321,14 +1444,17 @@ def main(persistente=False):
                 abrir_conversacion(cfg)  # que lo pueda repetir sin volver a decir "Jarvis"
             continue
         seguimiento = _entrada["seguimiento"]
+        al_publico = False
         if seguimiento:
             clase = clasificar_seguimiento(user)
             if clase == "jarvis":
                 seguimiento = False  # petición clara: contesta normal, sin filtro
             elif clase == "publico" and expositor.ACTIVO:
-                print(f"[Se lo dijiste al público, no a mí: {user}]\n")
-                hud.estado("escuchando" if en_conversacion() else "inactivo")
-                continue  # ni contesta ni gasta la IA; la ventana sigue lo que le quede
+                if not _puede_complementar(cfg):
+                    print(f"[Se lo dijiste al público, no a mí: {user}]\n")
+                    hud.estado("escuchando" if en_conversacion() else "inactivo")
+                    continue  # ni contesta ni gasta la IA; la ventana sigue lo que le quede
+                al_publico = True  # el modelo solo decide: callarse o complementar
         if not escrito:
             print(f"Tú{' (sin llamarme)' if seguimiento else ''}: {user}")
         hud.oido(user)
@@ -1347,7 +1473,8 @@ def main(persistente=False):
             continue
 
         try:
-            _procesar(cfg, history, user, escrito, interruptor, seguimiento=seguimiento)
+            _procesar(cfg, history, user, escrito, interruptor, seguimiento=seguimiento,
+                      al_publico=al_publico)
             if _ultimo_turno["ignorado"]:
                 # No era para él: no se alarga la ventana (si te pusiste a platicar con
                 # alguien más, Jarvis deja de escuchar sin su nombre cuando se acabe el rato)

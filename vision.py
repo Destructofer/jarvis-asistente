@@ -17,7 +17,10 @@ REGLAS_PERSONAS = (
     "preguntan quién es alguien, di con elegancia que no identificas personas. No comentes "
     "rasgos físicos, cuerpo, edad, etnia, ropa de alguien en particular ni juzgues apariencias. "
     "Habla del grupo en general (cuántas personas hay aproximadamente, el ambiente, si están "
-    "atentos, el lugar, objetos, pantallas, letreros). Sé cálido y respetuoso con el público.")
+    "atentos, el lugar, objetos, pantallas, letreros). Puedes notar si alguien parece tener una "
+    "duda o estar confundido (para ofrecerle ayuda), pero nunca lo digas en voz alta como "
+    "descripción de su cara o su cuerpo, ni lo pongas en evidencia. Sé cálido y respetuoso con "
+    "el público.")
 
 
 def _b64(img):

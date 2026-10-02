@@ -161,6 +161,26 @@ tanto. Cada respuesta vuelve a abrir la ventana, así que la plática sigue sola
   Si quieres asegurarte, di su nombre: "Jarvis, …" siempre es para él.
 - Duración: `config.json → conversacion_seg` y `conversacion_seg_expositor` (0 = apagado).
 
+## Jarvis observa al público (y no te confunde con órdenes)
+
+En modo expositor, Jarvis mira por la cámara cada ~8 segundos (`config.json → observador`):
+
+- **Si alguien parece tener una duda** (gesto de confusión que se sostiene en dos miradas
+  seguidas, o uno muy claro), espera a que **hagas una pausa** y pregunta con tacto, sobre lo
+  que estabas explicando: "¿Te quedó alguna duda sobre cómo se agenda la cita?". Si platicas
+  de frente con una persona le habla de tú; si es el público, en plural. Nunca menciona caras
+  ni pone a nadie en evidencia, y no vuelve a hacerlo antes de 60 s. La respuesta de esa
+  persona la escucha **sin que nadie diga "Jarvis"**.
+- **Si le explicas algo a alguien**, Jarvis sabe que no es para él (por cómo lo dices y porque
+  la cámara ve que platicas de frente con alguien) y se queda callado. **Solo si dijiste un dato
+  equivocado o faltó algo clave** de lo que está en `conocimiento/proyecto.md`, te complementa
+  con tacto **en tu siguiente pausa** ("Si me permites, el costo es de 99 pesos al mes"), como
+  máximo una vez cada 45 s (`complementar.cada_seg`). Si sigues hablando, se lo guarda.
+- "Jarvis, deja de observar al público" / "observa al público" lo apaga y lo prende.
+
+Todo esto depende de que la cámara esté configurada y de que `conocimiento/proyecto.md` tenga
+los datos reales: sin ellos no tiene con qué complementarte (y no inventa).
+
 ## Qué le puedes decir
 
 | Dices | Qué pasa |

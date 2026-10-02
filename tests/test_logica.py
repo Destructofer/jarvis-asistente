@@ -416,6 +416,95 @@ class Conversacion(Respuestas):
         self.assertFalse(genesis.en_conversacion())
 
 
+class Observador(Respuestas):
+    """Observa al público: dudas, pausas del expositor, complementos."""
+
+    def test_lee_lo_que_ve(self):
+        import observador
+        o = observador.parsear('Aquí va: {"escena": "Sala con 30 personas", "personas": "30", '
+                               '"platicando_de_frente": "true", "duda": true, "confianza_duda": 0.8, '
+                               '"atencion": "Alta"} fin')
+        self.assertEqual((o["personas"], o["platicando_de_frente"], o["duda"], o["atencion"]),
+                         (30, True, True, "alta"))
+        self.assertIsNone(observador.parsear("no es json"))
+
+    def test_cuando_intervenir(self):
+        import observador
+        conf = {"umbral_duda": 0.7, "pausa_entre_intervenciones_seg": 60, "ventana_seg": 25}
+        ahora = 1000.0
+        duda = lambda c: {"duda": True, "confianza_duda": c}  # noqa: E731
+        nada = {"duda": False, "confianza_duda": 0.0}
+        self.assertFalse(observador.debe_intervenir([(ahora, duda(0.75))], ahora, 0, conf))  # gesto suelto
+        self.assertTrue(observador.debe_intervenir([(ahora - 8, duda(0.7)), (ahora, duda(0.75))], ahora, 0, conf))
+        self.assertTrue(observador.debe_intervenir([(ahora, duda(0.9))], ahora, 0, conf))   # muy claro
+        self.assertFalse(observador.debe_intervenir([(ahora, duda(0.9))], ahora, ahora - 30, conf))  # muy seguido
+        self.assertFalse(observador.debe_intervenir([(ahora - 8, duda(0.9)), (ahora, nada)], ahora, 0, conf))
+        self.assertFalse(observador.debe_intervenir([(ahora - 60, duda(0.95))], ahora, 0, conf))  # ya viejo
+
+    def test_contexto_de_la_camara(self):
+        import observador
+        observador._historial.clear()
+        observador._historial.append((time.time(), {"platicando_de_frente": True}))
+        self.assertIn("de frente", observador.contexto_marca())
+        observador._historial.clear()
+        self.assertEqual(observador.contexto_marca(), "")
+
+    def test_detecta_pausas(self):
+        mic = escuchar.MIC
+        orig = list(mic._anillo)
+        try:
+            ahora = time.time()
+            mic._anillo.clear()
+            for i in range(25):  # 2 s de silencio
+                mic._anillo.append((ahora - 2 + i * escuchar.SEG_BLOQUE, np.zeros(escuchar.BLOQUE, np.float32)))
+            self.assertTrue(escuchar.en_pausa(1.3, umbral=0.004))
+            mic._anillo.append((ahora, np.full(escuchar.BLOQUE, 0.05, np.float32)))  # habló
+            self.assertFalse(escuchar.en_pausa(1.3, umbral=0.004))
+        finally:
+            mic._anillo.clear()
+            mic._anillo.extend(orig)
+
+    def test_no_se_graba_a_si_mismo(self):
+        import queue as q
+        sub = q.Queue()
+        for _ in range(30):
+            sub.put((time.time(), np.full(escuchar.BLOQUE, 0.05, np.float32)))
+        voz.HABLANDO.set()
+        try:
+            self.assertIsNone(escuchar._grabar_de_sub(sub, 0.004, 0.3, 5, espera_seg=0.5))
+        finally:
+            voz.HABLANDO.clear()
+
+    def test_complemento_se_guarda_para_la_pausa(self):
+        def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+            for t in ["<compl", "ementar> Si me permites agregar, ", "también funciona sin internet."]:
+                al_texto(t)
+            return {"content": "", "tool_calls": [], "origen": "falso"}
+        cerebro.chat = chat
+        turno = genesis.Turno(self.cfg, "como pueden ver", seguimiento=True)
+        r = genesis.responder(self.cfg, [{"role": "system", "content": "s"}], turno=turno)
+        turno.cerrar()
+        turno.esperar()
+        self.assertIsInstance(r, genesis.Complemento)
+        self.assertEqual(str(r), "Si me permites agregar, también funciona sin internet.")
+        self.assertEqual(self.dichas, [])  # nada se dijo todavía
+
+    def test_intervenir_escucha_la_respuesta(self):
+        orig = genesis.decir
+        genesis.decir = lambda *a, **k: None
+        try:
+            genesis._notas.clear()
+            genesis.intervenir({"palabra_activacion": True, "conversacion_seg": 20}, "¿Te quedó alguna duda?")
+            self.assertEqual(genesis._notas[-1]["content"], "¿Te quedó alguna duda?")
+            self.assertTrue(genesis.en_conversacion())
+            self.assertTrue(escuchar.CONVERSAR.is_set())
+        finally:
+            genesis.decir = orig
+            genesis._notas.clear()
+            genesis.cerrar_conversacion()
+            escuchar.CONVERSAR.clear()
+
+
 class Historial(unittest.TestCase):
     def test_compactar_no_deja_herramientas_huerfanas(self):
         h = [{"role": "system", "content": "s"}]
