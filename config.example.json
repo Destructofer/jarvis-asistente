@@ -54,6 +54,8 @@
   "silencio_seg": 0.8,
   "ventana_entrada": false,
   "palabra_activacion": true,
+  "conversacion_seg": 20,
+  "conversacion_seg_expositor": 12,
   "palabras_activacion": [
     "jarvis",
     "yarvis",

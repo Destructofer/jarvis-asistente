@@ -339,6 +339,83 @@ class Respuestas(unittest.TestCase):
                          "Claro que sí. El sistema tiene tres módulos principales. Y todos funcionan en la nube.")
 
 
+class Conversacion(Respuestas):
+    """Modo conversación: tras contestar sigue escuchando sin "Jarvis"; lo que no era para él
+    (le hablaste al público) no se contesta."""
+
+    def _cerebro_trozos(self, trozos):
+        def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+            for t in trozos:
+                if al_texto:
+                    al_texto(t)
+            return {"content": "".join(trozos), "tool_calls": [], "origen": "falso"}
+        cerebro.chat = chat
+
+    def _responder(self):
+        turno = genesis.Turno(self.cfg, "y luego les muestro", seguimiento=True)
+        r = genesis.responder(self.cfg, [{"role": "system", "content": "s"}], turno=turno)
+        turno.cerrar()
+        turno.esperar()
+        return r
+
+    def test_no_era_para_el_se_calla(self):
+        self._cerebro_trozos(["<ign", "orar>"])  # la marca puede llegar partida
+        self.assertIsInstance(self._responder(), genesis.Ignorado)
+        self.assertEqual(self.dichas, [])
+
+    def test_si_era_para_el_contesta(self):
+        self._cerebro_trozos(["Cl", "aro, ahí ", "va la respuesta."])
+        r = self._responder()
+        self.assertNotIsInstance(r, genesis.Ignorado)
+        self.assertEqual(self.dichas, ["Claro, ahí va la respuesta."])
+
+    def test_respuesta_muy_corta_no_se_pierde(self):
+        self._cerebro_trozos(["Sí."])
+        self._responder()
+        self.assertEqual(self.dichas, ["Sí."])
+
+    def test_ventana_escucha_sin_palabra(self):
+        orig = (escuchar.grabar, escuchar.transcribir, genesis.hud.estado)
+        frases = iter(["¿Y cuántos módulos tiene?", "Jarvis, abre Chrome"])
+        escuchar.grabar = lambda *a, **k: np.zeros(1600, np.float32)
+        escuchar.transcribir = lambda *a, **k: next(frases)
+        genesis.hud.estado = lambda *a: None
+        cfg = {"palabra_activacion": True, "conversacion_seg": 20,
+               "palabras_activacion": ["jarvis"]}
+        try:
+            genesis.abrir_conversacion(cfg)
+            self.assertEqual(genesis.obtener_entrada(cfg), ("¿Y cuántos módulos tiene?", False))
+            self.assertTrue(genesis._entrada["seguimiento"])
+            genesis.abrir_conversacion(cfg)
+            self.assertEqual(genesis.obtener_entrada(cfg), ("abre Chrome", False))
+            self.assertFalse(genesis._entrada["seguimiento"])  # dijo su nombre: sí era para él
+        finally:
+            escuchar.grabar, escuchar.transcribir, genesis.hud.estado = orig
+            genesis.cerrar_conversacion()
+
+    def test_clasificar_sin_ia(self):
+        para_jarvis = ["¿puedes explicar el de ventas?", "ahora muéstrales cómo se agenda una cita",
+                       "oye, ¿y tú cuántas personas ves en la sala?", "abre la presentación",
+                       "¿qué opinas de esa pregunta?", "explícales el módulo de reportes",
+                       "y ve a inventario"]
+        para_publico = ["como pueden ver, compañeros, esto nos ahorró mucho tiempo",
+                        "gracias por venir, empecemos con el problema que resolvemos",
+                        "les voy a mostrar la siguiente parte del sistema",
+                        "nosotros lo construimos en dos días", "bienvenidos a nuestra presentación"]
+        dudosas = ["y esto lo construimos en solo dos días durante el hackathon", "¿y qué día es hoy?"]
+        for f in para_jarvis:
+            self.assertEqual(genesis.clasificar_seguimiento(f), "jarvis", f)
+        for f in para_publico:
+            self.assertEqual(genesis.clasificar_seguimiento(f), "publico", f)
+        for f in dudosas:
+            self.assertEqual(genesis.clasificar_seguimiento(f), "duda", f)
+
+    def test_cierre_y_desactivado(self):
+        self.assertIn(genesis._limpia_orden("Gracias, Jarvis"), genesis.CIERRE)
+        genesis.abrir_conversacion({"palabra_activacion": True, "conversacion_seg": 0})
+        self.assertFalse(genesis.en_conversacion())
+
+
 class Historial(unittest.TestCase):
     def test_compactar_no_deja_herramientas_huerfanas(self):
         h = [{"role": "system", "content": "s"}]

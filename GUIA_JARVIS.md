@@ -147,6 +147,20 @@ Jarvis **no inventa** datos del proyecto: si le preguntan algo que no está ahí
 cifras, clientes), dice que esa pregunta te la deja a ti. Por eso vale la pena escribir las
 respuestas a las preguntas típicas del jurado (costo, modelo de negocio, qué sigue).
 
+## Modo conversación: habla de corrido, sin repetir "Jarvis"
+
+Solo la **primera** vez dices "Jarvis" (y puedes decir la orden de corrido: "Jarvis, abre la
+presentación", sin esperar el pitido). Después de que contesta, **sigue escuchando 20 segundos**
+(12 en modo expositor) sin su nombre ni pitido: el reactor del HUD se queda encendido mientras
+tanto. Cada respuesta vuelve a abrir la ventana, así que la plática sigue sola.
+
+- "Gracias" o "eso es todo" la cierra ("A sus órdenes."). Si te quedas callado, se cierra sola.
+- En **modo expositor** distingue lo que le dices a él de lo que le dices al público:
+  "¿puedes explicar el de ventas?", "muéstrales…", "¿y tú qué opinas?" → contesta;
+  "como pueden ver…", "gracias por venir", "les voy a mostrar…" → se queda callado.
+  Si quieres asegurarte, di su nombre: "Jarvis, …" siempre es para él.
+- Duración: `config.json → conversacion_seg` y `conversacion_seg_expositor` (0 = apagado).
+
 ## Qué le puedes decir
 
 | Dices | Qué pasa |

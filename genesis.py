@@ -54,6 +54,48 @@ REGLA_ORDENES = (
     "pide en una frase corta que lo repita. Si solo un nombre suena deformado, usa tu mejor "
     "interpretación. Para dar clic en algo usa clic_en directamente con el texto que dijo el "
     "usuario; solo si falla, lee la ventana con leer_ventana.")
+# Modo conversación: tras contestar, Jarvis sigue escuchando unos segundos SIN que digas su
+# nombre ni esperes el pitido (config.json → conversacion_seg). Lo que se dice en ese rato
+# llega marcado y el modelo decide si era para él: frente al público, el expositor habla
+# mucho con la audiencia y Jarvis no debe contestar eso.
+MARCA_SEGUIMIENTO = "[sin llamarte por tu nombre] "
+MARCA_IGNORAR = "<ignorar>"
+REGLA_SEGUIMIENTO = (
+    "\n\nCONVERSACIÓN SEGUIDA: los mensajes que empiezan con " + MARCA_SEGUIMIENTO.strip() +
+    " los dijo el usuario sin decir tu nombre, justo después de que hablaste. Si van dirigidos "
+    "a ti (una orden, una pregunta para ti, seguir lo que platicaban), responde normal. Si "
+    "parecen dichos a otra persona o al público, o son ruido sin sentido, responde exactamente "
+    + MARCA_IGNORAR + " y nada más.")
+# Filtro rápido (sin IA) para lo que se dijo sin "Jarvis". El modelo solo decide los casos
+# dudosos: probado con frases reales, a veces ignoraba peticiones claras y otras contestaba
+# lo que el expositor le decía al público.
+PARA_JARVIS = re.compile(
+    r"\b(puedes|podrias|podras|muestrales|muestranos|muestrame|explicales|explicanos|explicame|"
+    r"ensenales|ensenanos|cuentales|cuentanos|dinos|dime|y tu|oye tu|tu que|tu crees|que opinas|"
+    r"que ves|que piensas|a ver tu)\b"
+    r"|^(?:y |ahora |oye |entonces |a ver )?(?:abre|busca|pon|ponles|lee|ve|regresa|vuelve|cambia|"
+    r"baja|sube|dale|haz|recorre|explora|presiona|escribe|cierra|inicia|termina|sigue|mira)\b")
+PARA_PUBLICO = re.compile(
+    r"\b(ustedes|pueden ver|como ven|como pueden|les (?:voy|vamos|quiero|presento|muestro|cuento|"
+    r"comparto|dejo|explico)|gracias por (?:venir|estar|su)|bienvenid[oa]s|companeros|jurado|"
+    r"nuestro equipo|nosotros)\b")
+
+
+def clasificar_seguimiento(texto):
+    """'jarvis' si es claramente para él, 'publico' si claramente se le habla a la audiencia,
+    'duda' si no se sabe (lo decide el modelo)."""
+    t = skills._norm(texto)
+    jarvis, publico = bool(PARA_JARVIS.search(t)), bool(PARA_PUBLICO.search(t))
+    if jarvis and not publico:
+        return "jarvis"
+    if publico and not jarvis:
+        return "publico"
+    return "duda"
+
+
+# Para cerrar la conversación sin que conteste nada más que un "a sus órdenes"
+CIERRE = {"gracias", "muchas gracias", "eso es todo", "es todo", "nada mas", "listo gracias",
+          "seria todo", "eso seria todo", "terminamos", "puedes descansar", "descansa"}
 MAX_MENSAJES = 30        # mensajes de conversación (sin contar el de sistema) que se conservan
 MAX_TOOL_VIEJO = 400     # caracteres que se guardan de un resultado de herramienta ya usado
 
@@ -286,6 +328,15 @@ class YaDicho(str):
     """Respuesta que ya se dijo en voz alta mientras el modelo la escribía (streaming)."""
 
 
+class Ignorado(str):
+    """Lo que se dijo sin llamarlo no era para Jarvis: no contesta ni lo guarda."""
+
+
+def es_ignorar(texto):
+    t = str(texto).strip().lower()
+    return t.startswith(MARCA_IGNORAR) or t.startswith("ignorar") or t.startswith("[ignorar")
+
+
 class Turno:
     """Lo que Jarvis dice en respuesta a UNA orden. Puede empezar a hablar mientras el modelo
     todavía escribe (agregar() recibe el streaming), mete un relleno ("Claro.") si pensar
@@ -293,7 +344,7 @@ class Turno:
     cierra antes de ejecutar herramientas: una herramienta que habla (una rutina, el recorrido
     de la demo) tiene que poder tomar su turno de voz."""
 
-    def __init__(self, cfg, texto_usuario=""):
+    def __init__(self, cfg, texto_usuario="", seguimiento=False):
         self.cfg = cfg
         self.locuciones = []
         self._actual = None
@@ -305,6 +356,10 @@ class Turno:
         self._loc_relleno = None
         self._texto_usuario = texto_usuario
         self._lock = threading.Lock()
+        # Seguimiento (lo dijo sin decir "Jarvis"): el modelo puede contestar <ignorar> si no
+        # era para él. Se retiene el principio del texto hasta saberlo, para no decir nada.
+        self._puerta = "" if seguimiento else None
+        self.ignorado = False
 
     # --- voz ---
     def _nueva(self):
@@ -324,6 +379,17 @@ class Turno:
             raise Interrumpido()
         if self.t_primer_texto is None:
             self.t_primer_texto = time.time()
+        if self.ignorado:
+            return
+        if self._puerta is not None:
+            self._puerta += fragmento
+            inicio = self._puerta.lstrip().lower()
+            if es_ignorar(inicio):
+                self.ignorado = True
+                return
+            if len(inicio) < 3 or any(m.startswith(inicio) for m in (MARCA_IGNORAR, "ignorar", "[ignorar")):
+                return  # todavía puede ser la marca: se espera el siguiente pedazo
+            fragmento, self._puerta = self._puerta, None
         with self._lock:
             self.cancelar_relleno()
             if self._actual is None:
@@ -333,6 +399,12 @@ class Turno:
             self._actual.agregar(fragmento)
 
     def cerrar_ronda(self):
+        if self._puerta and not self.ignorado and not self.interrumpido:  # respuesta corta retenida
+            if es_ignorar(self._puerta.lstrip().lower()):
+                self.ignorado = True
+            else:
+                pendiente, self._puerta = self._puerta, None
+                self.agregar(pendiente)
         with self._lock:
             if self._actual is not None:
                 self._actual.cerrar()
@@ -570,16 +642,83 @@ def _despues_de_palabra(texto, palabras):
     return texto[m.end():].strip() if m else ""
 
 
+# ---------- Modo conversación ----------
+_conversacion = {"hasta": 0.0}
+_entrada = {"seguimiento": False}   # la última orden llegó sin decir "Jarvis"
+
+
+def _segundos_conversacion(cfg):
+    """Cuánto sigue escuchando tras contestar (config.json → conversacion_seg y, en modo
+    expositor, conversacion_seg_expositor). 0 = como antes: siempre hay que decir "Jarvis"."""
+    if not cfg.get("palabra_activacion", True):
+        return 0.0
+    if expositor.ACTIVO:
+        return float(cfg.get("conversacion_seg_expositor", 12) or 0)
+    return float(cfg.get("conversacion_seg", 20) or 0)
+
+
+def abrir_conversacion(cfg):
+    s = _segundos_conversacion(cfg)
+    _conversacion["hasta"] = time.time() + s if s > 0 else 0.0
+
+
+def cerrar_conversacion():
+    _conversacion["hasta"] = 0.0
+
+
+def en_conversacion():
+    return _conversacion["hasta"] > time.time()
+
+
+def _escuchar_seguimiento(cfg):
+    """Escucha SIN palabra de activación ni pitido mientras dure la ventana. Devuelve
+    (texto, dirigido): dirigido=True si de todos modos dijo "Jarvis". ('', False) si nadie
+    habló antes de que se cerrara la ventana."""
+    while True:
+        resta = _conversacion["hasta"] - time.time()
+        if resta <= 0.3:
+            return "", False
+        hud.estado("escuchando")  # el reactor encendido es la señal de que sigue atento
+        try:
+            audio = escuchar.grabar(umbral=cfg.get("mic_umbral", 0.004), espera_seg=resta)
+        except Exception as e:
+            print(f"[El micrófono dio un error en la conversación: {str(e)[:80]}]")
+            return "", False
+        if audio is None:
+            return "", False  # silencio todo el rato (o lo despertaron desde la bandeja)
+        texto = escuchar.transcribir(audio, cfg.get("whisper_modelo", "small"),
+                                     apps.vocabulario(), nube=True).strip()
+        if not texto:
+            continue  # ruido que no era voz: sigue escuchando lo que queda de la ventana
+        alternativas = "|".join(re.escape(p) for p in _palabras(cfg) if p)
+        dirigido = bool(alternativas and re.search(rf"\b(?:{alternativas})\b", skills._norm(texto)))
+        sin_nombre = escuchar.quitar_activacion(texto, _palabras(cfg))
+        if sin_nombre:
+            return sin_nombre, dirigido
+
+
 # ---------- Entrada ----------
 def obtener_entrada(cfg):
-    """Devuelve (texto, escrito). 'escrito' es True si vino del teclado."""
+    """Devuelve (texto, escrito). 'escrito' es True si vino del teclado. Si la orden llegó en
+    el modo conversación (sin decir "Jarvis"), _entrada["seguimiento"] queda en True."""
     umbral = cfg.get("mic_umbral", 0.004)
+    _entrada["seguimiento"] = False
 
     # Una orden que llegó interrumpiendo a Jarvis mientras hablaba ("Hey Jarvis, ya, gracias")
     try:
         return escuchar.Interruptor.ORDENES.get_nowait(), False
     except queue.Empty:
         pass
+
+    # Modo conversación: justo después de contestar, sigue escuchando sin la palabra
+    if en_conversacion() and _solo_voz(cfg):
+        print("Te sigo escuchando...")
+        texto, dirigido = _escuchar_seguimiento(cfg)
+        if texto:
+            _entrada["seguimiento"] = not dirigido
+            return texto, False
+        cerrar_conversacion()
+        hud.estado("inactivo")
 
     if not _solo_voz(cfg):
         user = input("Tú: ").strip()
@@ -848,6 +987,9 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
                             "content": "Ejecuta ahora la herramienta correspondiente; no solo lo anuncies."})
             continue
 
+        if not r["tool_calls"] and (es_ignorar(r["content"] or "") or (turno is not None and turno.ignorado)):
+            return Ignorado("")
+
         if not r["tool_calls"]:
             texto = limpiar(r["content"])
             # con streaming todo el texto ya pasó por el Turno (se está diciendo)
@@ -896,8 +1038,25 @@ def _personalidad(cfg, en_exposicion):
 
 def _prompt(cfg):
     en_exposicion = expositor.ACTIVO or _demo(cfg).get("activo")
+    import datetime
+    ahora = datetime.datetime.now()
     partes = [memoria.prompt_sistema(_personalidad(cfg, en_exposicion)), REGLA_EXTERNO,
-              REGLA_ORDENES, expositor.prompt_extra()]
+              REGLA_ORDENES, expositor.prompt_extra(),
+              # sin esto inventaba el día de la semana
+              f"\n\nAHORA: {skills.DIAS[ahora.weekday()]} {ahora.day} de "
+              f"{skills.MESES[ahora.month - 1]} de {ahora.year}, {ahora:%H:%M}."]
+    if _segundos_conversacion(cfg) > 0:
+        partes.append(REGLA_SEGUIMIENTO + (
+            " Estás frente al público y el expositor pasa la mayor parte del tiempo hablándoles a "
+            "ELLOS: sin tu nombre, contesta solo si es claramente una petición o pregunta para ti "
+            "('¿puedes explicar...?', 'muéstrales...', 'ahora el siguiente módulo'). Lo que suena a "
+            "exposición para la audiencia ('gracias por venir', 'empecemos con...', 'como pueden "
+            "ver', 'les voy a mostrar', 'esto nos permitió...') NO es para ti, aunque hable del "
+            "proyecto: " + MARCA_IGNORAR + ". Ante la duda, " + MARCA_IGNORAR + "."
+            if expositor.ACTIVO else
+            " Fuera de exposición casi siempre te hablan a ti: responde SIEMPRE (preguntas, "
+            "órdenes, seguir la plática), salvo que sea EVIDENTE que le habla a otra persona "
+            "(la nombra: 'mamá', 'compañeros', 'ya voy'...). Ante la duda, responde."))
     if en_exposicion:
         partes.append(conocimiento.texto(cfg))
     # El contenido de la presentación solo cuando se está exponiendo: antes entraba en CADA
@@ -950,7 +1109,8 @@ def _precalentar(cfg):
         if cfg.get("voz_activa", True):
             try:
                 frases = [f for lista in RELLENOS.values() for f in lista]
-                frases += ["No te escuché.", "Hasta luego.", "Perdón, se me cortó la conexión."]
+                frases += ["No te escuché.", "Hasta luego.", "Perdón, se me cortó la conexión.",
+                           "A sus órdenes."]
                 n = voz.precalentar(frases)
                 if n:
                     print(f"[Voz: {n} frases rápidas listas]")
@@ -992,10 +1152,16 @@ def _recordar_atajo(history, user, reply):
         history.append({"role": "assistant", "content": str(reply)})
 
 
-def _procesar(cfg, history, user, escrito, interruptor):
-    """Una orden completa: atajo o modelo, voz, y registro de tiempos."""
+_ultimo_turno = {"ignorado": False}
+
+
+def _procesar(cfg, history, user, escrito, interruptor, seguimiento=False):
+    """Una orden completa: atajo o modelo, voz, y registro de tiempos.
+    seguimiento=True: se dijo en el modo conversación, sin decir "Jarvis"; el modelo puede
+    decidir que no era para él (_ultimo_turno["ignorado"])."""
     _actividad["ultima"] = time.time()
-    turno = Turno(cfg, user)
+    _ultimo_turno["ignorado"] = False
+    turno = Turno(cfg, user, seguimiento=seguimiento)
     skills.INTERRUPCION.clear()
     t_inicio = time.time()
     t_fin_voz = escuchar.ULTIMA_ORDEN["fin"] if not escrito else t_inicio
@@ -1031,8 +1197,9 @@ def _procesar(cfg, history, user, escrito, interruptor):
         history[0]["content"] = _prompt(cfg)
         _compactar(history)
         antes = len(history)
-        history.append({"role": "user", "content": user})
-        turno.programar_relleno(float(cfg.get("relleno_ms", 1200)) / 1000)
+        history.append({"role": "user", "content": (MARCA_SEGUIMIENTO + user) if seguimiento else user})
+        if not seguimiento:  # un "Claro." antes de decidir que no era para él sonaría raro
+            turno.programar_relleno(float(cfg.get("relleno_ms", 1200)) / 1000)
         try:
             reply = responder(cfg, history, bool(VARIOS_PASOS.search(skills._norm(user))),
                               elegir_herramientas(user, history), turno, user)
@@ -1054,6 +1221,11 @@ def _procesar(cfg, history, user, escrito, interruptor):
             del history[antes:]
             hud.estado("error")
             turno.decir("Tuve un problema y no pude responder. ¿Puedes repetirlo?")
+            return
+        if isinstance(reply, Ignorado):
+            del history[antes:]  # no era para Jarvis: ni contesta ni lo recuerda
+            _ultimo_turno["ignorado"] = True
+            print("[No era para mí: me quedo callado]\n")
             return
         memoria.guardar_mensaje("user", user)
         memoria.guardar_mensaje("assistant", str(reply))
@@ -1146,19 +1318,42 @@ def main(persistente=False):
             # queda raro: en modo expositor se queda callado.
             if not escrito and cfg.get("avisar_no_escuche", True) and not expositor.ACTIVO:
                 decir(cfg, "No te escuché.")
+                abrir_conversacion(cfg)  # que lo pueda repetir sin volver a decir "Jarvis"
             continue
+        seguimiento = _entrada["seguimiento"]
+        if seguimiento:
+            clase = clasificar_seguimiento(user)
+            if clase == "jarvis":
+                seguimiento = False  # petición clara: contesta normal, sin filtro
+            elif clase == "publico" and expositor.ACTIVO:
+                print(f"[Se lo dijiste al público, no a mí: {user}]\n")
+                hud.estado("escuchando" if en_conversacion() else "inactivo")
+                continue  # ni contesta ni gasta la IA; la ventana sigue lo que le quede
         if not escrito:
-            print(f"Tú: {user}")
+            print(f"Tú{' (sin llamarme)' if seguimiento else ''}: {user}")
         hud.oido(user)
 
         if _limpia_orden(user) in SALIDAS:
+            cerrar_conversacion()
             if persistente:
                 decir(cfg, "Hasta luego.")
                 continue
             break
 
+        if _limpia_orden(user) in CIERRE:
+            # "Gracias" / "eso es todo": cierra la conversación con una frase corta
+            cerrar_conversacion()
+            decir(cfg, "A sus órdenes.")
+            continue
+
         try:
-            _procesar(cfg, history, user, escrito, interruptor)
+            _procesar(cfg, history, user, escrito, interruptor, seguimiento=seguimiento)
+            if _ultimo_turno["ignorado"]:
+                # No era para él: no se alarga la ventana (si te pusiste a platicar con
+                # alguien más, Jarvis deja de escuchar sin su nombre cuando se acabe el rato)
+                pass
+            else:
+                abrir_conversacion(cfg)
         except Exception as e:
             # Nada de una sola orden debe tumbar el bucle: en plena demo, reiniciar Jarvis
             # entero (la bandeja lo relanza en 10 s) se notaría mucho más que un "repítemelo".
