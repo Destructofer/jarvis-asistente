@@ -234,6 +234,20 @@ def es_afirmativo(texto):
     return bool(palabras & AFIRMATIVAS)
 
 
+def respuesta_si_no(texto):
+    """True (sí), False (no) o None si no contestó ni sí ni no ("dime qué estamos viendo"): en
+    ese caso no era una respuesta, era una orden nueva."""
+    palabras = _norm(texto).split()
+    if not palabras:
+        return None
+    conjunto = set(palabras)
+    if conjunto & NEGATIVAS:
+        return False
+    if conjunto & AFIRMATIVAS:
+        return True
+    return None
+
+
 # ---------- Skills seguras ----------
 @skill("hora_fecha", "Devuelve la fecha y la hora actuales del equipo.")
 def hora_fecha():

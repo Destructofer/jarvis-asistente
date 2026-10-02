@@ -505,6 +505,64 @@ class Observador(Respuestas):
             escuchar.CONVERSAR.clear()
 
 
+class Confirmaciones(Respuestas):
+    """Lo que pasó en la prueba real: tras leer la pantalla quiso pulsar «EMBIO 2.0», le dijeron
+    que no y lo volvió a pedir una y otra vez, tragándose las órdenes siguientes."""
+
+    def test_si_no_o_ninguna(self):
+        self.assertTrue(skills.respuesta_si_no("Sí, hazlo"))
+        self.assertFalse(skills.respuesta_si_no("No sé..."))
+        self.assertIsNone(skills.respuesta_si_no("Dime qué estamos viendo"))
+        self.assertIsNone(skills.respuesta_si_no(""))
+
+    def test_un_no_termina_la_orden(self):
+        llamadas = []
+
+        def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+            llamadas.append(1)  # el modelo insiste con lo mismo
+            return {"content": "", "tool_calls": [{"id": f"c{len(llamadas)}", "name": "clic_en",
+                                                   "args": {"texto": "EMBIO 2.0"}}], "origen": "falso"}
+        cerebro.chat = chat
+        orig = (genesis._preguntar, genesis.ejecutar_herramienta)
+        preguntas = []
+        genesis._preguntar = lambda cfg, p: (preguntas.append(p), False)[1]
+        genesis.ejecutar_herramienta = lambda cfg, n, a: "Leí la ventana." if n == "leer_ventana" else "ok"
+        try:
+            # primero lee la pantalla (contenido externo), luego quiere pulsar algo que no pediste
+            history = [{"role": "system", "content": "s"},
+                       {"role": "tool", "id": "x", "name": "leer_ventana", "content": "..."}]
+            turno = genesis.Turno(self.cfg, "dime qué estamos viendo")
+            orig_ext = skills.es_externo
+            skills.es_externo = lambda n: n in ("leer_ventana", "clic_en")
+            try:
+                r = genesis.responder(self.cfg, history, turno=turno, texto_usuario="dime qué estamos viendo")
+            finally:
+                skills.es_externo = orig_ext
+            turno.cerrar()
+            turno.esperar()
+            self.assertLessEqual(len(preguntas), 1)  # a lo mucho UNA pregunta, nunca 8
+            self.assertLessEqual(len(llamadas), 2)
+            self.assertIn("no lo hago", str(r).lower())
+        finally:
+            genesis._preguntar, genesis.ejecutar_herramienta = orig
+
+    def test_otra_orden_en_vez_de_contestar(self):
+        orig = genesis._preguntar
+
+        def preguntar(cfg, p):
+            genesis._orden_pendiente.append("Dime qué estamos viendo")
+            return False
+        genesis._preguntar = preguntar
+        try:
+            self.assertFalse(genesis.confirmar({}, "¿Lo hago?"))
+            self.assertTrue(genesis._confirmacion["negada"])
+            self.assertEqual(genesis.obtener_entrada({"palabra_activacion": True}),
+                             ("Dime qué estamos viendo", False))
+        finally:
+            genesis._preguntar = orig
+            genesis._orden_pendiente.clear()
+
+
 class Historial(unittest.TestCase):
     def test_compactar_no_deja_herramientas_huerfanas(self):
         h = [{"role": "system", "content": "s"}]

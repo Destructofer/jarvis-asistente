@@ -750,6 +750,9 @@ def obtener_entrada(cfg):
         return escuchar.Interruptor.ORDENES.get_nowait(), False
     except queue.Empty:
         pass
+    # Lo que dijiste cuando te pidió confirmar algo, pero que era otra orden
+    if _orden_pendiente:
+        return _orden_pendiente.pop(0), False
 
     # Modo conversación: justo después de contestar, sigue escuchando sin la palabra
     if en_conversacion() and _solo_voz(cfg):
@@ -867,7 +870,21 @@ def _confirmar_solo_voz(cfg):
     return bool(expositor.ACTIVO or _demo(cfg).get("confirmar_solo_voz", False))
 
 
+_orden_pendiente = []                 # lo que dijiste en vez de contestar una confirmación
+_confirmacion = {"negada": False}     # en esta orden ya se dijo que no a algo
+
+
 def confirmar(cfg, pregunta):
+    """Pide confirmación. Si la respuesta es no (o no hubo respuesta), queda anotado: el modelo
+    no debe volver a pedir lo mismo en esta orden (antes repetía la misma pregunta hasta 8
+    veces y cada una se tragaba lo siguiente que decías)."""
+    ok = _preguntar(cfg, pregunta)
+    if not ok:
+        _confirmacion["negada"] = True
+    return ok
+
+
+def _preguntar(cfg, pregunta):
     """Pide confirmación al usuario. Ante cualquier duda, responde False.
 
     Con Jarvis en segundo plano se abre una ventana con Sí/No y a la vez se escucha por voz:
@@ -904,7 +921,14 @@ def confirmar(cfg, pregunta):
                 return bool(valor)
             if valor:
                 print(f"Tú: {valor}")
-                return skills.es_afirmativo(valor)
+                respuesta = skills.respuesta_si_no(valor)
+                if respuesta is None:
+                    # No contestó sí ni no ("dime qué estamos viendo"): no era una respuesta,
+                    # era una orden nueva. Se cancela la acción y esa orden se atiende después.
+                    print("[Eso no fue un sí ni un no: lo tomo como tu siguiente orden]")
+                    _orden_pendiente.append(valor)
+                    return False
+                return respuesta
             if solo_voz:
                 return False  # sin ventana no hay otra forma de responder
             # la voz no oyó nada: se sigue esperando el botón hasta el límite
@@ -995,6 +1019,7 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
     # y no del usuario. Antes duraba ~10 órdenes: después de "¿qué ves?", cada clic de la demo
     # pedía confirmación. Las instrucciones de REGLA_EXTERNO siguen valiendo después.
     externo_visto = False
+    _confirmacion["negada"] = False
     streaming = turno is not None and cfg.get("respuesta_streaming", True)
     for _ in range(8):
         if turno is not None and turno.interrumpido:
@@ -1053,8 +1078,8 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
                 raise Interrumpido()
             if (externo_visto and skills.existe(c["name"]) and skills.es_sensible(c["name"])
                     and not _pedido_por_usuario(c["args"], texto_usuario)
-                    and not confirmar(cfg, f"Acabo de leer contenido de otras personas y ahora quiero "
-                                           f"{_describir_accion(c['name'], c['args'])}. ¿Lo permito?")):
+                    and not confirmar(cfg, f"Leí lo que hay en pantalla y ahora quiero "
+                                           f"{_describir_accion(c['name'], c['args'])}. ¿Lo hago? Sí o no.")):
                 resultado = skills.Fallo("El usuario no lo permitió. No se ejecutó nada.")
             else:
                 hud.estado("pensando")
@@ -1067,6 +1092,13 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
                 contenido = (MARCA_EXTERNO + contenido + "\n[FIN DEL CONTENIDO EXTERNO]")
             history.append({"role": "tool", "id": c["id"], "name": c["name"],
                             "content": contenido})
+
+        # Dijiste que no (o no contestaste): se acabó esta orden. Antes el modelo volvía a
+        # intentar lo mismo y preguntaba otra vez, hasta 8 veces seguidas.
+        if _confirmacion["negada"]:
+            if _orden_pendiente:
+                return Callado("Acción cancelada; paso a lo que me pediste.")
+            return "De acuerdo, no lo hago."
 
         # Camino rápido: si todo lo llamado ya deja una frase final (skills.es_terminal) y el
         # modelo no añadió nada por su cuenta, la decimos ya en vez de volver a preguntarle;
@@ -1481,6 +1513,13 @@ def main(persistente=False):
                 pass
             else:
                 abrir_conversacion(cfg)
+        except KeyboardInterrupt:
+            # Ctrl+C a media respuesta: se cancela ESA orden, no todo Jarvis (para salir,
+            # Ctrl+C mientras espera que le hables, o "adiós")
+            voz.detener()
+            cerrar_conversacion()
+            hud.estado("inactivo")
+            print("\n[Orden cancelada con Ctrl+C. Para cerrar Jarvis: Ctrl+C otra vez mientras espera.]\n")
         except Exception as e:
             # Nada de una sola orden debe tumbar el bucle: en plena demo, reiniciar Jarvis
             # entero (la bandeja lo relanza en 10 s) se notaría mucho más que un "repítemelo".
