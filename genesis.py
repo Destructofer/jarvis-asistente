@@ -14,6 +14,7 @@ import cerebro
 import conocimiento
 import control  # noqa: F401  (registra las skills de ventanas, teclas, clics y rutinas)
 import expositor
+import gestos  # manos por la cámara de la PC, estilo Iron Man (MediaPipe, local)
 import graph  # noqa: F401  (registra las skills de lectura de archivos de Teams)
 import hud
 import mantenimiento
@@ -21,6 +22,7 @@ import memoria
 import multimedia  # noqa: F401  (registra las skills youtube y spotify)
 import observador  # observa al público en modo expositor (dudas, con quién platicas)
 import panel
+import presencia  # Jarvis te ve: te saluda al llegar, nota cómo estás, te mira si se lo pides
 import presentacion
 import recordatorios
 import skills
@@ -269,6 +271,9 @@ GRUPOS = [
      ["buscar_archivo", "abrir_archivo", "abrir_carpeta"]),
     (r"rutina|demo",
      ["rutina", "listar_rutinas", "ensayar_demo", "recorrer_modulos"]),
+    (r"mirame|me ves|me estas viendo|como me veo|verme|tengo en la mano|traigo|te muestro|"
+     r"camara|gesto|\bmanos?\b|mouse|raton|estoy haciendo|cansad|desvelad",
+     ["mirar_usuario", "vista_usuario", "gestos"]),
 ]
 
 
@@ -886,6 +891,7 @@ def _confirmar_solo_voz(cfg):
 
 _orden_pendiente = []                 # lo que dijiste en vez de contestar una confirmación
 _confirmacion = {"negada": False}     # en esta orden ya se dijo que no a algo
+_esperando_si_no = {"cola": None}     # la confirmación en curso (para el 👍/👎 de gestos.py)
 
 
 def confirmar(cfg, pregunta):
@@ -910,6 +916,7 @@ def _preguntar(cfg, pregunta):
         return skills.es_afirmativo(input("¿Confirmas? (sí/no): "))
 
     resultados = queue.Queue()
+    _esperando_si_no["cola"] = resultados
     solo_voz = _confirmar_solo_voz(cfg)
     ventana = None if solo_voz else panel.preguntar(
         f"{_nombre(cfg)} · Confirmar", pregunta, lambda valor: resultados.put(("boton", valor)))
@@ -931,7 +938,9 @@ def _preguntar(cfg, pregunta):
                 origen, valor = resultados.get(timeout=max(0.1, fin - time.time()))
             except queue.Empty:
                 return False
-            if origen == "boton":
+            if origen in ("boton", "gesto"):
+                if origen == "gesto":
+                    print(f"[Contestaste con la mano: {'sí' if valor else 'no'}]")
                 return bool(valor)
             if valor:
                 print(f"Tú: {valor}")
@@ -947,6 +956,7 @@ def _preguntar(cfg, pregunta):
                 return False  # sin ventana no hay otra forma de responder
             # la voz no oyó nada: se sigue esperando el botón hasta el límite
     finally:
+        _esperando_si_no["cola"] = None
         if ventana is not None:
             ventana.cerrar()
         escuchar.CANCELAR.set()
@@ -1172,6 +1182,7 @@ def _prompt(cfg):
         pass
     if navegador is not None:
         partes.append(navegador.contexto())
+    partes.append(presencia.contexto())  # lo que Jarvis ve de ti (si la cámara está activa)
     return "".join(p for p in partes if p)
 
 
@@ -1257,6 +1268,7 @@ def _recordar_atajo(history, user, reply):
 
 _ultimo_turno = {"ignorado": False}
 _ocupado = {"turno": False}        # hay una orden en curso (el observador no debe hablar)
+_turno_vivo = {"interrumpir": None}  # cómo cortar la orden en curso (la ✋ de gestos.py)
 _notas = []                        # lo que Jarvis dijo por iniciativa propia, para la conversación
 _complemento = {"ultimo": 0.0}
 
@@ -1280,13 +1292,69 @@ def puede_hablar_por_su_cuenta():
     return not _ocupado["turno"] and not voz.HABLANDO.is_set()
 
 
-def intervenir(cfg, texto):
-    """Jarvis habla por iniciativa propia (el observador vio una duda): lo dice al público, lo
-    anota en la conversación y se queda escuchando la respuesta sin que nadie diga "Jarvis"."""
+def intervenir(cfg, texto, publico=True):
+    """Jarvis habla por iniciativa propia (el observador vio una duda, o te vio llegar): lo
+    dice, lo anota en la conversación y se queda escuchando la respuesta sin que nadie diga
+    "Jarvis". publico=False: te lo dice a ti (salida normal), no por las bocinas del público."""
     _notas.append({"role": "assistant", "content": texto})
-    decir(cfg, texto, publico=True)
+    decir(cfg, texto, publico=publico)
     abrir_conversacion(cfg)
     escuchar.CONVERSAR.set()  # corta la espera de la palabra de activación
+
+
+# ---------- Gestos (gestos.py) ----------
+def callar_por_gesto():
+    """✋: Jarvis se calla al instante, como si le dijeras "Hey Jarvis" a media frase."""
+    cortar = _turno_vivo["interrumpir"]
+    if cortar is not None:
+        cortar()
+    elif voz.HABLANDO.is_set():
+        voz.detener()
+
+
+def escuchar_por_gesto(cfg):
+    """☝: te escucha sin que digas "Jarvis" (bip y la misma ventana de conversación)."""
+    if _ocupado["turno"]:
+        return
+    pitido(cfg)
+    abrir_conversacion(cfg)
+    escuchar.CONVERSAR.set()  # corta la espera de la palabra de activación
+
+
+def confirmar_por_gesto(valor):
+    """👍/👎: contesta la confirmación en curso. False si no había ninguna."""
+    cola = _esperando_si_no["cola"]
+    if cola is None:
+        return False
+    cola.put(("gesto", bool(valor)))
+    return True
+
+
+def orden_por_gesto(texto):
+    """Un gesto configurado como "orden:...": entra como si lo hubieras dicho."""
+    escuchar.Interruptor.ORDENES.put(texto)
+    escuchar.CONVERSAR.set()
+
+
+def mirame_por_gesto(cfg):
+    """✌: te mira y te dice algo de lo que ve, como un compañero."""
+    if not puede_hablar_por_su_cuenta():
+        return
+    texto = presencia.mirar_usuario("Mírame y dime algo natural de lo que ves, como un compañero "
+                                    "que voltea a verme (puedes preguntarme algo).")
+    intervenir(cfg, str(texto), publico=False)
+
+
+def _conectar_ojos(cfg):
+    gestos.hooks.update({
+        "callar": callar_por_gesto, "escuchar": lambda: escuchar_por_gesto(cfg),
+        "confirmar": confirmar_por_gesto, "orden": orden_por_gesto,
+        "mirame": lambda: mirame_por_gesto(cfg), "sonido": lambda: pitido(cfg)})
+    presencia.puede_hablar = puede_hablar_por_su_cuenta
+    presencia.intervenir = lambda texto: intervenir(cfg, texto, publico=False)
+    presencia.actividad = lambda: _actividad["ultima"]
+    gestos.iniciar()
+    presencia.iniciar()
 
 
 def _procesar(cfg, history, user, escrito, interruptor, seguimiento=False, al_publico=False):
@@ -1300,6 +1368,7 @@ def _procesar(cfg, history, user, escrito, interruptor, seguimiento=False, al_pu
         return _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_publico)
     finally:
         _ocupado["turno"] = False
+        _turno_vivo["interrumpir"] = None
 
 
 def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_publico):
@@ -1312,6 +1381,7 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
         turno.interrumpido = True
         skills.INTERRUPCION.set()
         voz.detener()
+    _turno_vivo["interrumpir"] = al_interrumpir  # para la ✋ de gestos.py
     if interruptor is not None:
         interruptor.al_interrumpir = al_interrumpir
         interruptor.iniciar()
@@ -1443,6 +1513,7 @@ def main(persistente=False):
     expositor._hablar_normal = lambda texto: decir(cfg, texto)
     observador.puede_hablar = puede_hablar_por_su_cuenta
     observador.intervenir = lambda texto: intervenir(cfg, texto)
+    _conectar_ojos(cfg)  # la cámara de la PC: gestos y presencia (si están activos)
     if navegador is not None:
         navegador.configurar(cfg, hablar=lambda texto: decir(cfg, texto),
                              confirmar=lambda pregunta: confirmar(cfg, pregunta))

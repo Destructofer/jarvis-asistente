@@ -135,17 +135,35 @@ def _a_ollama(history):
     return out
 
 
-def _a_openai(history):
+def _firma(c):
+    """Gemini 3 firma cada llamada a herramienta (extra_content.google.thought_signature) y
+    exige recibirla de vuelta; si la llamada la hizo otro modelo (Groq), se usa el valor que
+    Google documenta para saltarse la revisión."""
+    return {"google": {"thought_signature": c.get("firma") or "skip_thought_signature_validator"}}
+
+
+def _extra(tc):
+    """La firma de Gemini que viene en una llamada a herramienta (None si no hay)."""
+    extra = getattr(tc, "extra_content", None) or (getattr(tc, "model_extra", None) or {}).get("extra_content")
+    try:
+        return (extra or {}).get("google", {}).get("thought_signature")
+    except AttributeError:
+        return None
+
+
+def _a_openai(history, gemini=False):
     out = []
     for m in history:
         if m["role"] == "assistant" and m.get("tool_calls"):
-            out.append({
-                "role": "assistant", "content": m.get("content") or None,
-                "tool_calls": [{"id": c["id"], "type": "function",
-                                "function": {"name": c["name"],
-                                             "arguments": json.dumps(c["args"])}}
-                               for c in m["tool_calls"]],
-            })
+            llamadas = []
+            for c in m["tool_calls"]:
+                llamada = {"id": c["id"], "type": "function",
+                           "function": {"name": c["name"], "arguments": json.dumps(c["args"])}}
+                if gemini:  # a Groq no: rechaza campos que no conoce
+                    llamada["extra_content"] = _firma(c)
+                llamadas.append(llamada)
+            out.append({"role": "assistant", "content": m.get("content") or None,
+                        "tool_calls": llamadas})
         elif m["role"] == "tool":
             out.append({"role": "tool", "tool_call_id": m["id"], "content": m["content"]})
         else:
@@ -166,17 +184,23 @@ class CorteEnVivo(SinCerebro):
 def _proveedores(cfg):
     """Lista de cerebros en la nube a probar, en orden. El plan gratis de Groq da un límite de
     tokens por minuto POR MODELO: si uno se satura, el siguiente modelo tiene su propio límite.
-    config.json → nube.respaldos (modelos del mismo proveedor) y nubes_extra (otros, p. ej.
-    Claude de Anthropic)."""
+    config.json → nube.respaldos (modelos del mismo proveedor) y nubes_extra (otros servicios
+    gratis: Google Gemini, Cerebras...). Los que no tienen su clave puesta se saltan solos.
+    nube.preferir_extras = true pone los de nubes_extra antes que Groq."""
     base = dict(cfg.get("nube", {}) or {})
     lista = [base] if base.get("url") else []
     for m in base.get("respaldos", ["openai/gpt-oss-20b"]):
         if m and m != base.get("modelo"):
             lista.append(dict(base, modelo=m))
-    for extra in cfg.get("nubes_extra", []) or []:
-        if extra.get("url") and extra.get("modelo"):
-            lista.append(extra)
+    extras = [e for e in cfg.get("nubes_extra", []) or [] if e.get("url") and e.get("modelo")]
+    lista = extras + lista if base.get("preferir_extras") else lista + extras
     return [p for p in lista if os.environ.get(p.get("clave_env", ""), "")]
+
+
+def acepta_razonamiento(modelo):
+    """gpt-oss (Groq, Cerebras) y Gemini aceptan reasoning_effort; a los demás (qwen en Groq)
+    se les manda sin él para no gastar una petición fallida."""
+    return any(m in (modelo or "").lower() for m in ("gpt-oss", "gemini"))
 
 
 def _args(texto):
@@ -188,14 +212,15 @@ def _args(texto):
 
 
 def _kwargs_nube(prov, history, tools, temperatura):
-    kwargs = {"model": prov["modelo"], "messages": _a_openai(history),
+    kwargs = {"model": prov["modelo"],
+              "messages": _a_openai(history, gemini="gemini" in prov["modelo"].lower()),
               "temperature": temperatura}
     if prov.get("max_tokens"):
         kwargs["max_tokens"] = int(prov["max_tokens"])
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-    if prov.get("razonamiento") and "gpt-oss" in prov["modelo"]:
+    if prov.get("razonamiento") and acepta_razonamiento(prov["modelo"]):
         kwargs["reasoning_effort"] = prov["razonamiento"]  # "low" = responde más rápido
     return kwargs
 
@@ -220,14 +245,14 @@ def _chat_nube(prov, history, tools, temperatura, al_texto=None):
 
     if al_texto is None:
         msg = _crear(cli, kwargs).choices[0].message
-        calls = [{"id": c.id, "name": c.function.name, "args": _args(c.function.arguments)}
-                 for c in (msg.tool_calls or [])]
+        calls = [{"id": c.id, "name": c.function.name, "args": _args(c.function.arguments),
+                  "firma": _extra(c)} for c in (msg.tool_calls or [])]
         return {"content": msg.content or "", "tool_calls": calls}
 
     # Streaming: el texto se entrega en cuanto llega (para empezar a hablar con la primera
     # frase) y las llamadas a herramientas se arman pedazo a pedazo.
     kwargs["stream"] = True
-    contenido, llamadas = [], {}
+    contenido, llamadas, ultima = [], {}, 0
     for trozo in _crear(cli, kwargs):
         if not trozo.choices:
             continue
@@ -236,9 +261,13 @@ def _chat_nube(prov, history, tools, temperatura, al_texto=None):
             contenido.append(delta.content)
             al_texto(delta.content)
         for tc in getattr(delta, "tool_calls", None) or []:
-            slot = llamadas.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+            # Gemini manda cada llamada completa en un pedazo y sin "index": se separan por id
+            clave = tc.index if tc.index is not None else (tc.id or ultima)
+            ultima = clave
+            slot = llamadas.setdefault(clave, {"id": "", "name": "", "args": "", "firma": None})
             if tc.id:
                 slot["id"] = tc.id
+            slot["firma"] = _extra(tc) or slot["firma"]
             f = tc.function
             if f is not None:
                 if f.name and f.name != slot["name"]:
@@ -246,7 +275,7 @@ def _chat_nube(prov, history, tools, temperatura, al_texto=None):
                 if f.arguments:
                     slot["args"] += f.arguments
     calls = [{"id": s["id"] or f"call_{uuid.uuid4().hex[:8]}", "name": s["name"],
-              "args": _args(s["args"])} for _, s in sorted(llamadas.items()) if s["name"]]
+              "args": _args(s["args"]), "firma": s["firma"]} for s in llamadas.values() if s["name"]]
     return {"content": "".join(contenido), "tool_calls": calls}
 
 

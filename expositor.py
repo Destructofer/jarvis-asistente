@@ -184,8 +184,9 @@ def modo_expositor(activar=True):
 @skill("mirar",
        "Mira por la cámara de los lentes del usuario (lo que él está viendo: el público, un "
        "objeto que muestra, un pizarrón, un letrero) o por la pantalla de la computadora, y "
-       "responde. Úsala para '¿qué ves?', 'saluda al público', 'describe lo que tengo en la "
-       "mano', 'lee ese letrero', 'cuántas personas hay', 'explica lo que se ve en pantalla'.",
+       "responde. Úsala para '¿qué ves?', 'saluda al público', 'lee ese letrero', 'cuántas "
+       "personas hay', 'explica lo que se ve en pantalla'. Para mirar AL USUARIO por la cámara "
+       "de la computadora ('mírame', '¿cómo me veo?', '¿qué tengo en la mano?') usa mirar_usuario.",
        {"pregunta": {"type": "string", "description": "Qué quiere saber o que diga el usuario, con sus palabras"},
         "fuente": {"type": "string", "enum": ["lentes", "pantalla"],
                    "description": "lentes (por defecto) o pantalla de la computadora"}},

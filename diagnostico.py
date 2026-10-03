@@ -13,6 +13,8 @@
     python diagnostico.py hud        -> muestra el HUD pasando por todos los estados
     python diagnostico.py palabra    -> prueba "hey Jarvis" durante 30 s
     python diagnostico.py powerpoint -> revisa que PowerPoint responda por COM
+    python diagnostico.py gestos     -> ventana con tu cámara: qué gesto y si te ve (Q para salir)
+    python diagnostico.py nubes      -> prueba cada cerebro en la nube (Groq, Gemini...) y su clave
 """
 import json
 import os
@@ -476,6 +478,88 @@ def llamada():
         ok("El audio de la llamada llega bien.")
 
 
+def gestos():
+    """Tu cámara en una ventana con lo que Jarvis entiende: la mano, el gesto, si te ve y los
+    eventos que dispararía (aquí NO ejecuta nada). Para ensayar los gestos antes de la demo."""
+    import cv2
+
+    import camara
+    import gestos as g
+    import presencia
+    c = cfg()
+    print("== Gestos: haz cada gesto ~medio segundo con la mano quieta. Q o Esc para salir ==")
+    rec, caras = g._reconocedor(), presencia._detector()
+    detector = g.Detector(c.get("gestos", {}))
+    eventos, inicio, ultimo_ts = [], time.monotonic(), 0
+    while True:
+        cuadro, ts = camara.cuadro_usuario(c)
+        if cuadro is None or ts == ultimo_ts:
+            time.sleep(0.01)
+            continue
+        ultimo_ts = ts
+        gesto, score, puntos = g.analizar(rec, cuadro, int((time.monotonic() - inicio) * 1000))
+        if not g.cerca(puntos, c.get("gestos", {})):
+            gesto, score, puntos = None, 0.0, None  # mano lejana: no cuenta
+        evento = detector.actualizar(time.time(), gesto, score, puntos)
+        if evento:
+            accion = {**g.ACCIONES, **(c.get("gestos", {}).get("acciones") or {})}.get(evento, "")
+            eventos.append(f"{evento} -> {accion or '(nada)'}")
+            print(f"  {eventos[-1]}")
+        vista = cv2.flip(cuadro, 1)
+        alto, ancho = vista.shape[:2]
+        for x, y in puntos or []:
+            cv2.circle(vista, (int(x * ancho), int(y * alto)), 4, (255, 200, 0), -1)
+        te_ve = presencia.hay_cara(caras, cuadro, float(c.get("presencia", {}).get("tamano_cara", 0.08)))
+        cv2.putText(vista, f"gesto: {g.NOMBRES.get(gesto, '-') if gesto else '-'} ({score:.2f})",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(vista, "te veo" if te_ve else "no te veo", (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, (0, 255, 0) if te_ve else (0, 0, 255), 2)
+        for i, e in enumerate(eventos[-5:]):
+            cv2.putText(vista, e, (10, alto - 20 - 28 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.imshow("Jarvis - gestos (Q para salir)", vista)
+        if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+            break
+    cv2.destroyAllWindows()
+    camara.lector(camara.indice_usuario(c)).parar()
+
+
+def nubes():
+    """Cada cerebro en la nube (y cada nube con visión): ¿tiene clave? ¿contesta? ¿en cuánto?"""
+    import cerebro
+    import configuracion
+    c = cfg()
+    configuracion.cargar_claves_de_windows(c)
+    print("== Cerebros en la nube (en el orden en que se usan) ==")
+    base = dict(c.get("nube", {}) or {})
+    lista = [base] + [dict(base, modelo=m) for m in base.get("respaldos", []) if m != base.get("modelo")]
+    lista += list(c.get("nubes_extra", []) or []) + list((c.get("vision", {}) or {}).get("respaldos") or [])
+    vistos = set()
+    for prov in lista:
+        clave_id = (prov.get("url"), prov.get("modelo"))
+        if clave_id in vistos or not prov.get("url"):
+            continue
+        vistos.add(clave_id)
+        nombre = f"{prov.get('nombre') or cerebro.host_de(prov['url'])} · {prov['modelo']}"
+        clave = os.environ.get(prov.get("clave_env", ""), "")
+        if not clave:
+            mal(f"{nombre}: falta la clave {prov.get('clave_env')} (setx {prov.get('clave_env')} \"tu-clave\")")
+            continue
+        try:
+            cli = cerebro.cliente(prov["url"], clave, 20)
+            t = time.time()
+            r = cli.chat.completions.create(model=prov["modelo"], max_tokens=200,
+                                            messages=[{"role": "user", "content": "Di solo: listo"}])
+            ok(f"{nombre}: {time.time() - t:.1f} s → {(r.choices[0].message.content or '').strip()[:30]}")
+        except Exception as e:
+            mal(f"{nombre}: {type(e).__name__}: {str(e)[:140]}")
+            if "404" in str(e) or "not found" in str(e).lower():
+                try:
+                    ids = sorted(m.id for m in cli.models.list())
+                    print(f"        modelos disponibles: {', '.join(ids[:25])}")
+                except Exception:
+                    pass
+
+
 def general():
     print("== Jarvis: revisión general ==")
     c = cfg()
@@ -491,7 +575,9 @@ def general():
                 mal(f"Falta el modelo local '{m}': ollama pull {m}")
     except Exception as e:
         mal(f"Ollama no responde ({type(e).__name__}); sin internet no habrá cerebro")
-    for mod in ("openwakeword", "cv2", "pptx", "faster_whisper", "piper", "edge_tts"):
+    for clave in ("GEMINI_API_KEY", "CEREBRAS_API_KEY"):
+        (ok if os.environ.get(clave) else mal)(f"{clave} {'configurada' if os.environ.get(clave) else 'no configurada (sin ese respaldo gratis)'}")
+    for mod in ("openwakeword", "cv2", "pptx", "faster_whisper", "piper", "edge_tts", "mediapipe"):
         try:
             __import__(mod)
             ok(f"módulo {mod}")
@@ -506,7 +592,8 @@ def general():
 if __name__ == "__main__":
     pruebas = {"audio": audio, "voz": probar_voz, "voces": voces, "camaras": camaras, "vision": vision,
                "hud": probar_hud, "palabra": palabra, "powerpoint": powerpoint, "demo": demo,
-               "latencia": latencia, "ventanas": ventanas, "llamada": llamada}
+               "latencia": latencia, "ventanas": ventanas, "llamada": llamada, "gestos": gestos,
+               "nubes": nubes}
     arg = sys.argv[1] if len(sys.argv) > 1 else ""
     import skills
     skills.configurar(cfg())

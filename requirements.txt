@@ -64,5 +64,6 @@ opencv-python==5.0.0.93    # cámara (OBS Virtual Camera / webcam) para el modo 
 python-pptx==1.0.2         # leer el contenido de las diapositivas si PowerPoint no responde por COM
 edge-tts==7.2.8            # voces neuronales de Microsoft (gratis, muy naturales; requiere internet)
 playwright==1.63.0         # manejar el software de la demo en Chrome (usa tu Chrome instalado)
+mediapipe==1.0.1          # gestos de la mano y si estás frente a la PC (local, sin internet)
 
 # Opcional: Whisper en la GPU NVIDIA (mucho más rápido) → pip install -r requirements-gpu.txt

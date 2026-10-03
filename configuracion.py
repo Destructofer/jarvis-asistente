@@ -13,13 +13,15 @@ RUTA = Path(__file__).parent / "config.json"
 _lock = threading.Lock()
 
 CLAVES = {"GROQ_API_KEY", "ELEVENLABS_API_KEY", "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",
-          "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "ANTHROPIC_API_KEY", "DEMO_USUARIO", "DEMO_CLAVE"}
+          "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "ANTHROPIC_API_KEY", "DEMO_USUARIO", "DEMO_CLAVE",
+          "GEMINI_API_KEY", "CEREBRAS_API_KEY"}
 
 
 def _claves_de_config(cfg):
     nombres = set()
     for bloque in (cfg.get("nube"), (cfg.get("vision") or {}).get("nube"), cfg.get("stt"),
-                   *(cfg.get("nubes_extra") or [])):
+                   *(cfg.get("nubes_extra") or []),
+                   *((cfg.get("vision") or {}).get("respaldos") or [])):
         if isinstance(bloque, dict) and bloque.get("clave_env"):
             nombres.add(bloque["clave_env"])
     login = ((cfg.get("demo") or {}).get("login") or {})

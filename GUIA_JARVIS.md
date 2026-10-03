@@ -174,6 +174,45 @@ Jarvis no habla como asistente sino como un compañero más (`config.json → pe
   propondría...") y nunca inventa datos ni planes del equipo.
 - Nada de frases de asistente ("¿en qué más puedo ayudarte?"); te llama por tu nombre.
 
+## Jarvis te ve y entiende tus manos (estilo Iron Man)
+
+Usa la cámara de la laptop (`config.json → camara.usuario_indice`, normalmente 0). Lo que tiene
+que ser instantáneo (tus manos y si estás frente a la PC) se calcula **en la laptop** con
+MediaPipe: es gratis, funciona sin internet y tarda ~35 ms por cuadro.
+
+| Gesto (sostenlo ~medio segundo, mano quieta) | Qué hace |
+|---|---|
+| ✋ palma abierta | Jarvis se calla al instante |
+| ☝ índice arriba | te escucha sin que digas "Jarvis" (suena el bip) |
+| 👍 / 👎 | contesta "sí" / "no" cuando te pide confirmar algo |
+| ✌ victoria | te mira y te dice algo, como un compañero que voltea a verte |
+| 🤟 rock | **modo mouse**: el índice mueve el cursor y juntar pulgar e índice hace clic; otro 🤟 lo apaga |
+| 👋 deslizar a la izquierda / derecha | siguiente / anterior diapositiva (sin presentación: cambia de ventana) |
+
+- Todo se cambia en `gestos.acciones`. Un gesto puede lanzar una orden de voz
+  (`"puno": "orden:pausa la música"`) o teclas (`"teclas:ctrl+s"`); `""` lo desactiva.
+- **Ensáyalo**: `.\.venv\Scripts\python diagnostico.py gestos` abre tu cámara y muestra qué gesto ve y
+  qué haría (sin ejecutarlo).
+- **Te saluda** al encenderlo y cuando vuelves tras 5 min fuera (`presencia.saludar_tras_min`),
+  con algo que note si viene al caso, y se queda escuchando tu respuesta.
+- Mientras platican, cada 2 min echa un vistazo (`presencia.describir_cada_seg`, 0 = nunca) y
+  lo toma en cuenta al contestar ("te veo desvelado: ¿lo dejamos para mañana?").
+- Dile "mírame", "¿cómo me veo?", "¿qué tengo en la mano?" o "¿qué te parece esto?" mostrándole
+  algo. "Deja de verme" apaga la cámara; "ya puedes verme" la vuelve a encender.
+
+## Cerebros gratis de respaldo (cuando Groq llega a su límite)
+
+El plan gratis de Groq se satura con varias preguntas seguidas. Ahora Jarvis pasa solo a otra
+nube gratis en vez de caer al modelo local (que tarda ~26 s):
+
+1. **Google Gemini** (gratis, sin caducidad, también con visión): saca la clave en
+   https://aistudio.google.com/apikey y en PowerShell `setx GEMINI_API_KEY "tu-clave"`.
+2. **Cerebras** (opcional; muy rápido, pero su prueba gratis dura 30 días): clave en
+   https://cloud.cerebras.ai y `setx CEREBRAS_API_KEY "tu-clave"`.
+
+Abre una terminal nueva y revisa con `.\.venv\Scripts\python diagnostico.py nubes`. Si prefieres
+Gemini antes que Groq: `"nube": {"preferir_extras": true}`.
+
 ## Jarvis observa al público (y no te confunde con órdenes)
 
 En modo expositor, Jarvis mira por la cámara cada ~8 segundos (`config.json → observador`):
@@ -261,7 +300,10 @@ micrófono de la laptop; si se cae internet, sigue con el modelo local y la voz 
 
 ## Privacidad y respeto al público
 
-- Jarvis no identifica personas ni comenta rasgos físicos (regla fija en `vision.py`).
+- Jarvis no identifica personas ni comenta rasgos físicos del público (regla fija en
+  `vision.py`). A ti sí te puede comentar lo que le preguntes (con tacto, nada sensible).
+- Gestos y "¿estás frente a la PC?" se calculan en la laptop: ese video no sale de ella. Solo
+  el saludo, los vistazos y "mírame" mandan una foto pequeña al modelo de visión.
 - Con la nube: el audio de tus órdenes, el texto y las imágenes van a Groq; lo que Jarvis dice
   va a ElevenLabs (o Microsoft Edge) para generar la voz. Con `"modo": "offline"` y
   `"voz_motor": "windows"` nada sale de la laptop.

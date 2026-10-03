@@ -29,7 +29,11 @@ reproducir en Spotify/YouTube, y navegar Microsoft Teams.
 - **voz.py** — `Locucion`: frases generadas en paralelo y reproducidas en orden y por turnos
   (ElevenLabs en streaming → Edge → Piper → Windows), caché de frases y `detener()`.
 - **cerebro.py** — el modelo de lenguaje: nube (Groq, en streaming, conexiones persistentes)
-  si hay internet y clave configurada; si no, cae a un modelo local con Ollama.
+  si hay internet y clave configurada, con respaldos gratis en otras nubes (Google Gemini,
+  Cerebras: `nubes_extra`); si nada responde, cae a un modelo local con Ollama.
+- **gestos.py** / **presencia.py** — la cámara de la laptop: gestos de la mano estilo Iron Man
+  (callar, escuchar, sí/no, mouse con la mano, deslizar diapositivas) y saber si estás frente
+  a la PC para saludarte y tomar en cuenta cómo te ve. MediaPipe, local y gratis.
 - **skills.py** — el registro de "herramientas" que el modelo puede llamar (`@skill(...)`) y
   la infraestructura común (confirmaciones para acciones riesgosas, etc.).
 - **memoria.py** — recuerdos permanentes e historial, en SQLite (`datos/genesis.db`).
@@ -152,6 +156,8 @@ Procesos del sistema (`explorer`, `dwm`, el propio Genesis...) nunca se cierran:
   pidas leer — se envía a Groq para procesarlo, y lo que responde se envía a ElevenLabs (o a
   Microsoft Edge) para generar la voz. Si no quieres que algo salga del equipo, usa
   `"modo": "offline"`, `"stt": {"modo": "local"}` y `"voz_motor": "windows"` (o Piper).
+- Los gestos y la detección de si estás frente a la PC se calculan en el equipo (MediaPipe);
+  solo el saludo, los vistazos y "mírame" envían una foto pequeña al modelo de visión.
 - Los últimos ~45 s de audio del micrófono se guardan solo en memoria (para "responde la
   pregunta que me hicieron"); nunca se escriben a disco.
 - La conversación se guarda en `datos/genesis.db` (últimos 500 mensajes) y en

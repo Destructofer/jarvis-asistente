@@ -15,6 +15,10 @@ aquí hay varias "fuentes" intercambiables en config.json → camara.fuente:
   POST a http://IP-DE-TU-PC:8765/frame. Es el camino "oficial" a futuro.
 - "pantalla": la pantalla principal (para que Jarvis vea tu propia pantalla).
 - "archivo": una imagen fija, para probar la visión sin lentes.
+
+Aparte está la cámara de la COMPUTADORA, la que te ve a ti (camara.usuario_indice, normalmente
+0): la usan gestos.py (manos, estilo Iron Man) y presencia.py (Jarvis te ve). Cada cámara tiene
+su propio lector, así que puede estar viendo los lentes y tu webcam a la vez.
 """
 import io
 import os
@@ -110,6 +114,14 @@ class _Lector:
         if self.hilo is not None:
             self.hilo.join(timeout=2)
 
+    def ultimo(self, indice):
+        """(cuadro BGR de OpenCV, momento) más reciente sin convertir, para lo que analiza
+        video continuo (gestos). (None, 0) si aún no hay imagen."""
+        self.asegurar(indice)
+        if self.error:
+            raise CamaraError(self.error)
+        return self.cuadro, self.ts
+
     def foto(self, indice, espera=6.0):
         self.asegurar(indice)
         limite = time.time() + espera
@@ -125,7 +137,36 @@ class _Lector:
                           "cámara virtual o que el número de cámara sea el correcto.")
 
 
-_lector = _Lector()
+_lectores = {}   # índice de cámara -> _Lector
+_lock_lectores = threading.Lock()
+
+
+def lector(indice):
+    with _lock_lectores:
+        if indice not in _lectores:
+            _lectores[indice] = _Lector()
+        return _lectores[indice]
+
+
+def indice_usuario(cfg):
+    """La cámara de la computadora, la que te ve a ti (no la de los lentes)."""
+    return int(_conf(cfg).get("usuario_indice", 0))
+
+
+def cuadro_usuario(cfg):
+    """(cuadro BGR, momento) de tu webcam, para gestos y presencia."""
+    return lector(indice_usuario(cfg)).ultimo(indice_usuario(cfg))
+
+
+def foto_usuario(cfg):
+    """Foto PIL de tu webcam, ya reducida (para preguntarle al modelo de visión)."""
+    img = _reducir(lector(indice_usuario(cfg)).foto(indice_usuario(cfg)))
+    try:
+        ULTIMA_PATH.parent.mkdir(parents=True, exist_ok=True)
+        img.save(ULTIMA_PATH, "JPEG", quality=85)
+    except OSError:
+        pass
+    return img
 
 
 def calentar(cfg):
@@ -134,7 +175,8 @@ def calentar(cfg):
     c = _conf(cfg)
     if c.get("fuente", "webcam") == "webcam":
         try:
-            _lector.asegurar(int(c.get("webcam_indice", 0)))
+            indice = int(c.get("webcam_indice", 0))
+            lector(indice).asegurar(indice)
         except Exception:
             pass
     elif c.get("fuente") == "http":
@@ -261,7 +303,8 @@ def capturar(cfg, fuente=None):
     c = _conf(cfg)
     fuente = fuente or c.get("fuente", "webcam")
     if fuente == "webcam":
-        img = _lector.foto(int(c.get("webcam_indice", 0)))
+        indice = int(c.get("webcam_indice", 0))
+        img = lector(indice).foto(indice)
     elif fuente == "ventana":
         img = _capturar_ventana(c.get("ventana_titulo", "WhatsApp"))
     elif fuente == "http":

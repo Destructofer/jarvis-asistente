@@ -17,9 +17,35 @@
       "qwen/qwen3.8-27b"
     ],
     "razonamiento": "low",
-    "esperar_saturacion_seg": 4
+    "esperar_saturacion_seg": 4,
+    "preferir_extras": false
   },
-  "nubes_extra": [],
+  "nubes_extra": [
+    {
+      "nombre": "Google Gemini (gratis)",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "modelo": "gemini-3.1-flash-lite",
+      "clave_env": "GEMINI_API_KEY",
+      "timeout": 20,
+      "razonamiento": "minimal"
+    },
+    {
+      "nombre": "Google Gemini Flash (gratis)",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "modelo": "gemini-3.8-flash",
+      "clave_env": "GEMINI_API_KEY",
+      "timeout": 25,
+      "razonamiento": "low"
+    },
+    {
+      "nombre": "Cerebras (prueba gratis 30 días)",
+      "url": "https://api.cerebras.ai/v1",
+      "modelo": "gpt-oss-120b",
+      "clave_env": "CEREBRAS_API_KEY",
+      "timeout": 20,
+      "razonamiento": "low"
+    }
+  ],
   "respuesta_streaming": true,
   "herramientas_compactas": true,
   "relleno_ms": 1200,
@@ -224,7 +250,8 @@
     ],
     "http_puerto": 8765,
     "http_token": "",
-    "archivo": ""
+    "archivo": "",
+    "usuario_indice": 0
   },
   "vision": {
     "modo": "auto",
@@ -235,7 +262,16 @@
       "timeout": 25
     },
     "local_modelo": "qwen2.5vl:7b",
-    "max_tokens": 400
+    "max_tokens": 400,
+    "respaldos": [
+      {
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "modelo": "gemini-3.1-flash-lite",
+        "clave_env": "GEMINI_API_KEY",
+        "timeout": 25,
+        "razonamiento": "minimal"
+      }
+    ]
   },
   "hud": {
     "activo": true,
@@ -282,5 +318,39 @@
       }
     ]
   },
-  "razonamiento_opinion": "medium"
+  "razonamiento_opinion": "medium",
+  "gestos": {
+    "activo": true,
+    "sostener_seg": 0.45,
+    "confianza": 0.6,
+    "fps": 15,
+    "pausa_entre_gestos_seg": 1.2,
+    "deslizar_distancia": 0.28,
+    "deslizar_sin_presentacion": "ventanas",
+    "apagar_mouse_seg": 20,
+    "acciones": {
+      "palma": "callar",
+      "dedo_arriba": "escuchar",
+      "pulgar_arriba": "si",
+      "pulgar_abajo": "no",
+      "victoria": "mirame",
+      "rock": "modo_mouse",
+      "puno": "",
+      "deslizar_izquierda": "siguiente",
+      "deslizar_derecha": "anterior"
+    },
+    "tamano_mano": 0.1
+  },
+  "presencia": {
+    "activo": true,
+    "saludar": true,
+    "saludar_al_iniciar": true,
+    "saludar_tras_min": 5,
+    "pausa_saludos_min": 20,
+    "ausencia_seg": 15,
+    "describir_cada_seg": 120,
+    "platicando_min": 5,
+    "tamano_cara": 0.08,
+    "lado": 640
+  }
 }
