@@ -102,7 +102,8 @@ def _detector():
     opciones = mp_vision.FaceDetectorOptions(
         base_options=mp_python.BaseOptions(model_asset_path=str(gestos.modelo("blaze_face_short_range.tflite"))),
         running_mode=mp_vision.RunningMode.IMAGE, min_detection_confidence=0.6)
-    return mp_vision.FaceDetector.create_from_options(opciones)
+    with gestos.silencio_nativo():
+        return mp_vision.FaceDetector.create_from_options(opciones)
 
 
 def hay_cara(detector, cuadro_bgr, tamano_minimo=0.08):

@@ -491,6 +491,18 @@ def gestos():
     rec, caras = g._reconocedor(), presencia._detector()
     detector = g.Detector(c.get("gestos", {}))
     eventos, inicio, ultimo_ts = [], time.monotonic(), 0
+    try:
+        _ventana_gestos(c, camara, g, presencia, rec, caras, detector, eventos, inicio, ultimo_ts)
+    except KeyboardInterrupt:
+        pass  # Ctrl+C a media imagen: se cierra limpio, sin el error largo de MediaPipe
+    finally:
+        cv2.destroyAllWindows()
+        camara.lector(camara.indice_usuario(c)).parar()
+    print(f"  Listo: {len(eventos)} gestos reconocidos.")
+
+
+def _ventana_gestos(c, camara, g, presencia, rec, caras, detector, eventos, inicio, ultimo_ts):
+    import cv2
     while True:
         cuadro, ts = camara.cuadro_usuario(c)
         if cuadro is None or ts == ultimo_ts:
@@ -518,9 +530,7 @@ def gestos():
             cv2.putText(vista, e, (10, alto - 20 - 28 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.imshow("Jarvis - gestos (Q para salir)", vista)
         if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
-            break
-    cv2.destroyAllWindows()
-    camara.lector(camara.indice_usuario(c)).parar()
+            return
 
 
 def nubes():

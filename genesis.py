@@ -1513,7 +1513,6 @@ def main(persistente=False):
     expositor._hablar_normal = lambda texto: decir(cfg, texto)
     observador.puede_hablar = puede_hablar_por_su_cuenta
     observador.intervenir = lambda texto: intervenir(cfg, texto)
-    _conectar_ojos(cfg)  # la cámara de la PC: gestos y presencia (si están activos)
     if navegador is not None:
         navegador.configurar(cfg, hablar=lambda texto: decir(cfg, texto),
                              confirmar=lambda pregunta: confirmar(cfg, pregunta))
@@ -1549,6 +1548,9 @@ def main(persistente=False):
 
     print(f"{_nombre(cfg)} listo (modo: {cfg.get('modo', 'auto')}, "
           f"{len(memoria.listar_hechos())} recuerdos).\n")
+    # La cámara de la PC (gestos y presencia) al final: si te saludara mientras calibra el
+    # micrófono, su propia voz subiría el umbral y luego no te oiría bien
+    _conectar_ojos(cfg)
 
     while True:
         escuchar.ULTIMA_TRANSCRIPCION.update(seg=0.0, origen="")

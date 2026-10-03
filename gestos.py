@@ -77,6 +77,30 @@ def activo():
     return bool(_conf().get("activo", True))
 
 
+class silencio_nativo:
+    """MediaPipe (C++) escribe directo a la consola una docena de avisos técnicos al cargar sus
+    modelos, sin hacer caso a GLOG_minloglevel. Mientras se cargan, la salida de errores de
+    bajo nivel se manda a la nada (los errores de Python siguen saliendo normal después)."""
+
+    def __enter__(self):
+        import sys
+        try:
+            sys.stderr.flush()
+            self._fd = os.dup(2)
+            nulo = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(nulo, 2)
+            os.close(nulo)
+        except OSError:
+            self._fd = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._fd is not None:
+            os.dup2(self._fd, 2)
+            os.close(self._fd)
+        return False
+
+
 def modelo(nombre):
     """Ruta del modelo de MediaPipe; lo descarga la primera vez (~8 MB)."""
     ruta = MODELOS / nombre
@@ -322,7 +346,8 @@ def _reconocedor():
         running_mode=mp_vision.RunningMode.VIDEO, num_hands=1,
         min_hand_detection_confidence=0.6, min_hand_presence_confidence=0.5,
         min_tracking_confidence=0.5)
-    return mp_vision.GestureRecognizer.create_from_options(opciones)
+    with silencio_nativo():
+        return mp_vision.GestureRecognizer.create_from_options(opciones)
 
 
 def analizar(reconocedor, cuadro_bgr, t_ms):
