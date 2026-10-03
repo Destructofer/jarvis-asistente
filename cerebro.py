@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -276,11 +277,26 @@ def _motivo(e):
     if "413" in t or "too large" in t.lower():
         return "petición demasiado grande para el plan"
     if "429" in t or "rate limit" in t.lower():
-        return "límite por minuto alcanzado"
+        espera = espera_sugerida(e)
+        return "límite por minuto alcanzado" + (f" (libre en {espera:.1f}s)" if espera else "")
     return f"{type(e).__name__}: {t[:100]}"
 
 
-def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+_saturado = {}  # modelo -> momento hasta el que Groq dijo que estaba al límite
+
+
+def espera_sugerida(e):
+    """Segundos que el servicio pide esperar tras un 429 ('Please try again in 2.3s' / '850ms'),
+    o None si no lo dice."""
+    m = re.search(r"try again in\s+(?:(\d+)m)?([\d.]+)(ms|s)", str(e), re.I)
+    if not m:
+        return None
+    minutos = int(m.group(1) or 0)
+    valor = float(m.group(2))
+    return minutos * 60 + (valor / 1000 if m.group(3).lower() == "ms" else valor)
+
+
+def chat(cfg, history, tools, temperatura=0.2, al_texto=None, razonamiento=None):
     """Devuelve {'content', 'tool_calls', 'origen'}. Prueba los cerebros en la nube en orden
     y, si ninguno responde, el modelo local.
 
@@ -300,27 +316,57 @@ def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
     cb = emitir if al_texto is not None else None
 
     caidos = set()  # servicios sin red en esta petición: sus otros modelos tampoco llegarían
+
+    def probar(prov):
+        """Una petición a ese modelo (con un reintento si la conexión vieja estaba cerrada).
+        Devuelve la respuesta o None."""
+        host = host_de(prov["url"])
+        p = dict(prov, razonamiento=razonamiento) if razonamiento else prov
+        for intento in range(2):
+            try:
+                r = _chat_nube(p, history, tools, temperatura, cb)
+                marcar_conexion(host, True)
+                _saturado.pop(prov["modelo"], None)
+                r["origen"] = f"nube · {prov['modelo']}"
+                return r
+            except Exception as e:
+                if estado["emitido"]:
+                    raise CorteEnVivo("Perdón, se me cortó la conexión.") from e
+                if intento == 0 and conexion_rota(e):
+                    continue  # conexión vieja cerrada por el servidor: otra vez, ya
+                print(f"[{prov['modelo']} no respondió ({_motivo(e)}); pruebo el siguiente]")
+                if "429" in str(e) or "rate limit" in str(e).lower():
+                    _saturado[prov["modelo"]] = time.time() + (espera_sugerida(e) or 10)
+                if es_error_de_red(e):
+                    marcar_conexion(host, False)
+                    caidos.add(host)
+                return None
+        return None
+
     if usar_nube:
-        for prov in proveedores:
-            host = host_de(prov["url"])
-            if host in caidos:
+        ahora = time.time()
+        # Los que Groq dijo hace poco que están al límite van al final: no se pierde una
+        # petición (ni su tiempo) en un 429 seguro
+        libres = [p for p in proveedores if _saturado.get(p["modelo"], 0) <= ahora]
+        for prov in libres + [p for p in proveedores if p not in libres]:
+            if host_de(prov["url"]) in caidos:
                 continue
-            for intento in range(2):
-                try:
-                    r = _chat_nube(prov, history, tools, temperatura, cb)
-                    marcar_conexion(host, True)
-                    r["origen"] = f"nube · {prov['modelo']}"
+            r = probar(prov)
+            if r is not None:
+                return r
+        # Todos al límite: si el que se libera antes lo hace en pocos segundos, se espera. El
+        # modelo local en CPU tarda ~26 s: esperar 2-3 s a la nube es mucho mejor.
+        max_espera = float((cfg.get("nube") or {}).get("esperar_saturacion_seg", 4))
+        pendientes = [(_saturado[p["modelo"]] - time.time(), p) for p in proveedores
+                      if p["modelo"] in _saturado and host_de(p["url"]) not in caidos]
+        if pendientes:
+            espera, prov = min(pendientes, key=lambda x: x[0])
+            if espera <= max_espera:
+                print(f"[Todos los modelos al límite; espero {max(0.0, espera):.1f}s a {prov['modelo']}]")
+                time.sleep(max(0.0, espera) + 0.2)
+                r = probar(prov)
+                if r is not None:
                     return r
-                except Exception as e:
-                    if estado["emitido"]:
-                        raise CorteEnVivo("Perdón, se me cortó la conexión.") from e
-                    if intento == 0 and conexion_rota(e):
-                        continue  # conexión vieja cerrada por el servidor: otra vez, ya
-                    print(f"[{prov['modelo']} no respondió ({_motivo(e)}); pruebo el siguiente]")
-                    if es_error_de_red(e):
-                        marcar_conexion(host, False)
-                        caidos.add(host)
-                    break
 
     try:
         r = _chat_local(cfg, history, tools, temperatura, cb)

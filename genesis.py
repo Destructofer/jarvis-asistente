@@ -108,6 +108,20 @@ def clasificar_seguimiento(texto):
     return "duda"
 
 
+# Preguntas que piden criterio propio (opinar, comparar, analizar): ahí Jarvis razona más a
+# fondo (gpt-oss con reasoning_effort "medium") en vez de contestar rápido y plano. Las
+# órdenes ("abre", "siguiente") siguen en modo rápido.
+OPINION = re.compile(
+    r"\b(opinas|opinion|crees|piensas|que te parece|que harias|harias|recomiendas|recomendarias|"
+    r"cual es mejor|cual prefieres|prefieres|por que|analiza|analizalo|ventajas|desventajas|"
+    r"conviene|deberia|deberiamos|vale la pena|mejorarias|cambiarias|agregarias|quitarias|tu que dices|"
+    r"estas de acuerdo|que onda con|como ves|como lo ves|que tal esta|critica|evalua)\b")
+
+
+def pide_opinion(texto):
+    return bool(OPINION.search(skills._norm(texto)))
+
+
 # Para cerrar la conversación sin que conteste nada más que un "a sus órdenes"
 CIERRE = {"gracias", "muchas gracias", "eso es todo", "es todo", "nada mas", "listo gracias",
           "seria todo", "eso seria todo", "terminamos", "puedes descansar", "descansa"}
@@ -1024,10 +1038,13 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
     for _ in range(8):
         if turno is not None and turno.interrumpido:
             raise Interrumpido()  # ni una vuelta más al modelo: ya hay una orden nueva
-        temperatura = 0.2 if fallos_idioma == 0 else 0.7
+        # Opinión/análisis: razona más y habla con más soltura; órdenes: rápido y preciso
+        profundo = pide_opinion(texto_usuario) and not uso_herramienta
+        temperatura = 0.7 if fallos_idioma else (0.55 if profundo else 0.2)
         try:
             r = cerebro.chat(cfg, history, skills.schemas(herramientas), temperatura,
-                             al_texto=turno.agregar if streaming else None)
+                             al_texto=turno.agregar if streaming else None,
+                             razonamiento=cfg.get("razonamiento_opinion", "medium") if profundo else None)
         finally:
             if turno is not None:
                 turno.cerrar_ronda()
@@ -1114,9 +1131,11 @@ def _personalidad(cfg, en_exposicion):
     """En exposición, la personalidad corta (config.json → personality_expositor): la general
     trae instrucciones de Teams, Spotify y tareas que no aplican frente al público y pesa ~630
     tokens en CADA petición."""
-    if en_exposicion and cfg.get("personality_expositor"):
-        return cfg["personality_expositor"]
-    return cfg["personality"]
+    texto = (cfg["personality_expositor"] if en_exposicion and cfg.get("personality_expositor")
+             else cfg["personality"])
+    # {presentador}: el nombre de con quién trabaja (config.json → expositor.presentador)
+    nombre = (cfg.get("expositor", {}) or {}).get("presentador") or "el usuario"
+    return texto.replace("{presentador}", nombre)
 
 
 def _prompt(cfg):
@@ -1332,7 +1351,9 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
             contenido = user
         history.append({"role": "user", "content": contenido})
         if not seguimiento:  # un "Claro." antes de decidir que no era para él sonaría raro
-            turno.programar_relleno(float(cfg.get("relleno_ms", 1200)) / 1000)
+            # pensar a fondo tarda más: el "Buena pregunta." llega antes, como en una plática
+            retraso = float(cfg.get("relleno_ms", 1200)) / 1000
+            turno.programar_relleno(min(retraso, 0.7) if pide_opinion(user) else retraso)
         try:
             reply = responder(cfg, history, bool(VARIOS_PASOS.search(skills._norm(user))),
                               elegir_herramientas(user, history), turno, user)

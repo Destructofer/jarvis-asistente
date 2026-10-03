@@ -35,9 +35,10 @@ _diario = deque(maxlen=8)
 _diario_hilo = {"hilo": None}
 
 ESTILO = (
-    "Hablas como un mayordomo digital al estilo de J.A.R.V.I.S.: elegante, seguro, preciso y "
-    "con un humor fino y breve. En español de México neutro. Frases cortas que suenen bien en "
-    "voz alta; nada de listas, emojis, markdown ni símbolos.")
+    "Hablas como un integrante más del equipo, con criterio propio y el estilo de J.A.R.V.I.S.: "
+    "elegante, seguro, cálido y con un humor fino y breve. En español de México neutro. Frases "
+    "cortas que suenen bien en voz alta; nada de listas, emojis, markdown, símbolos ni frases de "
+    "asistente.")
 
 
 def _cfg():

@@ -161,6 +161,19 @@ tanto. Cada respuesta vuelve a abrir la ventana, así que la plática sigue sola
   Si quieres asegurarte, di su nombre: "Jarvis, …" siempre es para él.
 - Duración: `config.json → conversacion_seg` y `conversacion_seg_expositor` (0 = apagado).
 
+## Jarvis tiene criterio propio
+
+Jarvis no habla como asistente sino como un compañero más (`config.json → personality` y
+`personality_expositor`; `{presentador}` se cambia por tu nombre):
+
+- **Opina de verdad**: ante "¿qué opinas?", "¿cuál es mejor?", "¿qué le mejorarías?" toma una
+  postura con su razón, puede no estar de acuerdo contigo (con respeto) y a veces te devuelve
+  una pregunta. En esas preguntas **razona más a fondo** (`razonamiento_opinion: "medium"`) y
+  dice "Buena pregunta." mientras piensa; las órdenes siguen en modo rápido.
+- **Honesto**: reconoce debilidades del proyecto; sus ideas propias las dice como suyas ("yo
+  propondría...") y nunca inventa datos ni planes del equipo.
+- Nada de frases de asistente ("¿en qué más puedo ayudarte?"); te llama por tu nombre.
+
 ## Jarvis observa al público (y no te confunde con órdenes)
 
 En modo expositor, Jarvis mira por la cámara cada ~8 segundos (`config.json → observador`):

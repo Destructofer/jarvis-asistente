@@ -299,7 +299,7 @@ class Respuestas(unittest.TestCase):
     def _cerebro(self, respuestas):
         llamadas = []
 
-        def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+        def chat(cfg, history, tools, temperatura=0.2, al_texto=None, **_k):
             texto = respuestas[len(llamadas)]
             llamadas.append(texto)
             if al_texto:
@@ -344,7 +344,7 @@ class Conversacion(Respuestas):
     (le hablaste al público) no se contesta."""
 
     def _cerebro_trozos(self, trozos):
-        def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+        def chat(cfg, history, tools, temperatura=0.2, al_texto=None, **_k):
             for t in trozos:
                 if al_texto:
                     al_texto(t)
@@ -476,7 +476,7 @@ class Observador(Respuestas):
             voz.HABLANDO.clear()
 
     def test_complemento_se_guarda_para_la_pausa(self):
-        def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+        def chat(cfg, history, tools, temperatura=0.2, al_texto=None, **_k):
             for t in ["<compl", "ementar> Si me permites agregar, ", "también funciona sin internet."]:
                 al_texto(t)
             return {"content": "", "tool_calls": [], "origen": "falso"}
@@ -518,7 +518,7 @@ class Confirmaciones(Respuestas):
     def test_un_no_termina_la_orden(self):
         llamadas = []
 
-        def chat(cfg, history, tools, temperatura=0.2, al_texto=None):
+        def chat(cfg, history, tools, temperatura=0.2, al_texto=None, **_k):
             llamadas.append(1)  # el modelo insiste con lo mismo
             return {"content": "", "tool_calls": [{"id": f"c{len(llamadas)}", "name": "clic_en",
                                                    "args": {"texto": "EMBIO 2.0"}}], "origen": "falso"}
@@ -561,6 +561,27 @@ class Confirmaciones(Respuestas):
         finally:
             genesis._preguntar = orig
             genesis._orden_pendiente.clear()
+
+
+class Criterio(unittest.TestCase):
+    """Cuándo Jarvis razona a fondo (opinión) y cuándo contesta rápido (orden)."""
+
+    def test_pide_opinion(self):
+        for f in ["¿Qué opinas de usar los lentes?", "¿qué le mejorarías al sistema?",
+                  "¿cuál es mejor, React o Vue?", "¿por qué falló?", "¿cómo lo ves?",
+                  "¿estás de acuerdo con el jurado?", "¿crees que funcione?"]:
+            self.assertTrue(genesis.pide_opinion(f), f)
+        for f in ["abre la calculadora", "siguiente", "ve a inventario", "¿qué hora es?"]:
+            self.assertFalse(genesis.pide_opinion(f), f)
+
+    def test_espera_sugerida(self):
+        self.assertEqual(cerebro.espera_sugerida(Exception("Please try again in 2.3s.")), 2.3)
+        self.assertAlmostEqual(cerebro.espera_sugerida(Exception("try again in 850ms")), 0.85)
+        self.assertIsNone(cerebro.espera_sugerida(Exception("otro error")))
+
+    def test_presentador_en_la_personalidad(self):
+        cfg = {"personality": "Trabajas con {presentador}.", "expositor": {"presentador": "Chris"}}
+        self.assertEqual(genesis._personalidad(cfg, False), "Trabajas con Chris.")
 
 
 class Historial(unittest.TestCase):
