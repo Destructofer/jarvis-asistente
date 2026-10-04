@@ -21,7 +21,6 @@ from pathlib import Path
 
 import panel
 
-CARPETA_VAULT = Path(__file__).parent / "vaultboy"
 
 FONDO = "#010203"          # color que Windows vuelve transparente en el reactor
 COLORES = {
@@ -55,7 +54,6 @@ POSE = "espera"            # la pose inicial y rígida: entre animación y anima
 PAUSA_LIBRE = (2.5, 5.0)   # s de pose entre animaciones del modo libre (al azar en ese rango)
 PAUSA_CAMBIO = 0.6         # s de pose al pasar de una animación a otra distinta
 ALTO_FIGURA = 0.78         # alto del muñeco, como fracción de hud.tamano: igual en TODAS
-_ajustes = {}              # vaultboy/ajustes.json: dónde está el muñeco en cada GIF
 DURACION_COMPLETADO = 3.6  # s del pulgar arriba al terminar una acción o una descarga
 
 
@@ -64,8 +62,14 @@ def _conf():
 
 
 def _usa_vault():
-    return (_conf().get("estilo", "vaultboy") == "vaultboy"
-            and (CARPETA_VAULT / f"{POSE}.gif").exists())
+    """El avatar animado (o el reactor azul si se eligió, o si no hay ningún avatar todavía)."""
+    if _conf().get("estilo", "vaultboy") not in ("vaultboy", "avatar"):
+        return False
+    try:
+        _refrescar_avatar()  # barato: solo compara la versión (cambia al agregar un GIF)
+    except Exception:
+        return False
+    return _av["pose"] is not None
 
 
 def _centro_x():
@@ -425,82 +429,59 @@ def _limpiar_oido():
         _s["oido_hasta"] = 0.0
 
 
+# ---------- El avatar (avatares.py) ----------
+# Las animaciones vienen de Documentos\Jarvis\Avatares\<personaje>\ ya preparadas por
+# avatares.py (sin fondo, medidas y clasificadas). Aquí solo se colocan y se dibujan.
+_av = {"version": None, "por_cat": {}, "todas": [], "pose": None, "figura": {}}
+
+
+def _refrescar_avatar():
+    """Relee el avatar si cambió (un GIF nuevo, otro personaje): descarta lo ya cargado."""
+    import avatares
+    v = (avatares.version(), avatares.activo())
+    if v == _av["version"]:
+        return
+    por_cat, figura = {}, {}
+    for cat in avatares.CATEGORIAS:
+        lista = avatares.entradas(cat)
+        por_cat[cat] = [r for r, _f in lista]
+        figura.update({r: f for r, f in lista})
+    pose = avatares.pose()
+    if pose:
+        figura[pose[0]] = pose[1]
+    _av.update(version=v, por_cat=por_cat, figura=figura, pose=pose[0] if pose else None,
+               todas=[r for lista in por_cat.values() for r in lista])
+    _pil_vault.clear()
+    _cuadros_vault.clear()
+    _vista.update(clave=None, archivo=None, libre_archivo=None)
+
+
 def _archivos_vault(categoria):
-    """vaultboy/<categoria>.gif y sus variantes <categoria>_2.gif, _3...: se elige una al azar."""
-    return (sorted(CARPETA_VAULT.glob(f"{categoria}.gif"))
-            + sorted(CARPETA_VAULT.glob(f"{categoria}_*.gif")))
-
-
-def _sin_fondo(img):
-    """RGBA con el fondo transparente y solo el muñeco.
-
-    En el estilo Vault Boy las líneas del dibujo son del MISMO gris que el fondo, así que no
-    basta con borrar ese gris (el muñeco quedaría lleno de huecos). Se borra solo el gris que
-    está fuera de la figura (conectado al borde de la imagen) y los huecos grandes, como el
-    espacio entre el brazo y la cintura; las líneas finas de adentro se conservan."""
-    import cv2
-    import numpy as np
-    rgb = np.asarray(img.convert("RGB"))
-    g = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.int16)
-    fondo_val = int(np.median(np.concatenate([g[0], g[-1], g[:, 0], g[:, -1]])))
-    parecido = (np.abs(g - fondo_val) <= 22).astype(np.uint8)
-    k3, k5 = np.ones((3, 3), np.uint8), np.ones((5, 5), np.uint8)
-    candidato = (cv2.dilate(1 - parecido, k3) == 0).astype(np.uint8)  # dilatar sella las líneas
-    n, etiquetas, stats, _ = cv2.connectedComponentsWithStats(candidato, connectivity=4)
-    alto, ancho = g.shape
-    fondo = np.zeros((alto, ancho), bool)
-    for i in range(1, n):
-        x, y, w, h, area = stats[i]
-        comp = etiquetas == i
-        toca_borde = x == 0 or y == 0 or x + w >= ancho or y + h >= alto
-        if toca_borde or (area > 40 and cv2.erode(comp.astype(np.uint8), k5).any()):
-            fondo |= comp
-    # el anillo de 1 px que dejó la dilatación alrededor de la figura, si es color fondo, fuera
-    fondo |= cv2.dilate(fondo.astype(np.uint8), k3).astype(bool) & (parecido == 1)
-    from PIL import Image
-    return Image.fromarray(np.dstack([rgb, np.where(fondo, 0, 255).astype(np.uint8)]), "RGBA")
-
-
-def _ajuste(ruta, cuadros):
-    """(alto, pies, centro) del muñeco en ese GIF: de vaultboy/ajustes.json o, si no está,
-    del dibujo (el alto y la base de lo que se ve en el primer cuadro)."""
-    if not _ajustes:
-        try:
-            import json
-            _ajustes.update(json.loads((CARPETA_VAULT / "ajustes.json").read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            _ajustes["_"] = {}
-    a = _ajustes.get(ruta.name)
-    if a:
-        return float(a["alto"]), float(a["pies"]), float(a["centro"])
-    b = cuadros[0][0].getchannel("A").getbbox() or (0, 0) + cuadros[0][0].size
-    return float(b[3] - b[1]), float(b[3]), (b[0] + b[2]) / 2
+    """Las animaciones de esa categoría (si hay varias, se elige una al azar)."""
+    return list(_av["por_cat"].get(categoria, []))
 
 
 def _preparar_vault(ruta):
-    """Cuadros sin fondo, escalados para que el MUÑECO mida siempre lo mismo y quede parado en
-    la misma línea (no la escena: en el laboratorio o la mina hay objetos alrededor), con la
-    posición en el lienzo. Sin Tk: sirve en otro hilo. Devuelve {"x", "y", "cuadros"}."""
-    if ruta.name in _pil_vault:
-        return _pil_vault[ruta.name]
+    """Cuadros escalados para que el PERSONAJE mida siempre lo mismo y quede parado en la misma
+    línea (no la escena: en el laboratorio o la mina hay objetos alrededor), con la posición en
+    el lienzo. Sin Tk: sirve en otro hilo. Devuelve {"x", "y", "cuadros", "dura"}."""
+    clave = str(ruta)
+    if clave in _pil_vault:
+        return _pil_vault[clave]
     from PIL import Image, ImageSequence
     lado = int(_conf().get("tamano", 150))
     ancho_c, alto_c = _dims()
     base = alto_c - int(lado * 0.2)         # línea de los pies (deja aire para lo que va más abajo)
-    cuadros = [(_sin_fondo(fr), max(20, int(fr.info.get("duration", 60))))
+    cuadros = [(fr.convert("RGBA").copy(), max(20, int(fr.info.get("duration", 60) or 60)))
                for fr in ImageSequence.Iterator(Image.open(ruta))]
-    alto, pies, centro = _ajuste(ruta, cuadros)
+    fig = _av["figura"].get(ruta) or {}
+    alto = float(fig.get("alto") or cuadros[0][0].height)
+    pies = float(fig.get("pies") or cuadros[0][0].height)
+    centro = float(fig.get("centro") or cuadros[0][0].width / 2)
     k = (lado * ALTO_FIGURA) / max(1.0, alto)
-    # Recorte común a toda la animación (lo vacío no se guarda) y lo que caería fuera del lienzo
-    caja = None
-    for f, _ms in cuadros:
-        b = f.getchannel("A").getbbox()
-        if b:
-            caja = b if caja is None else (min(caja[0], b[0]), min(caja[1], b[1]),
-                                           max(caja[2], b[2]), max(caja[3], b[3]))
-    caja = caja or (0, 0) + cuadros[0][0].size
+    caja = (0, 0) + cuadros[0][0].size   # ya viene recortada al dibujo
     ox, oy = _centro_x() - centro * k, base - pies * k  # dónde cae el (0, 0) del GIF en el lienzo
-    # El muñeco va pegado a la esquina; si la escena tiene algo de ese lado (el cyborg, la
+    # El personaje va pegado a la esquina; si la escena tiene algo de ese lado (el cyborg, la
     # puerta, las rocas), la animación entera se recorre lo justo para que quepa
     if (caja[2] - caja[0]) * k <= ancho_c - 4:
         ox -= max(0.0, ox + caja[2] * k - (ancho_c - 2))
@@ -517,44 +498,49 @@ def _preparar_vault(ruta):
         lista.append((f, ms))
     datos = {"x": int(ox + caja[0] * k), "y": int(oy + caja[1] * k), "cuadros": lista,
              "dura": sum(ms for _, ms in lista) / 1000}
-    _pil_vault[ruta.name] = datos
+    _pil_vault[clave] = datos
     return datos
 
 
 def _precargar_vault():
-    for ruta in sorted(CARPETA_VAULT.glob("*.gif")):
+    try:
+        _refrescar_avatar()
+    except Exception as e:
+        print(f"[HUD: no pude leer el avatar: {e}]")
+        return
+    for ruta in list(_av["todas"]) + ([_av["pose"]] if _av["pose"] else []):
         try:
             _preparar_vault(ruta)
         except Exception as e:
-            print(f"[HUD: no pude preparar vaultboy/{ruta.name}: {e}]")
+            print(f"[HUD: no pude preparar {Path(ruta).name}: {e}]")
 
 
 def _cargar_vault(ruta):
-    """{"x", "y", "cuadros": [(PhotoImage, ms)]} de un GIF (solo en el hilo de Tk)."""
+    """{"x", "y", "cuadros": [(PhotoImage, ms)]} de una animación (solo en el hilo de Tk)."""
     if ruta is None:
         return None
-    if ruta.name not in _cuadros_vault:
+    clave = str(ruta)
+    if clave not in _cuadros_vault:
         try:
             from PIL import ImageTk
             datos = _preparar_vault(ruta)
-            _cuadros_vault[ruta.name] = dict(
+            _cuadros_vault[clave] = dict(
                 datos, cuadros=[(ImageTk.PhotoImage(f), ms) for f, ms in datos["cuadros"]])
             datos["cuadros"] = []  # ya está en Tk: la copia en PIL solo gastaba memoria
         except Exception as e:
-            print(f"[HUD: no pude cargar vaultboy/{ruta.name}: {e}]")
-            _cuadros_vault[ruta.name] = None
-    return _cuadros_vault[ruta.name]
+            print(f"[HUD: no pude cargar {Path(ruta).name}: {e}]")
+            _cuadros_vault[clave] = None
+    return _cuadros_vault[clave]
 
 
 def _duracion(archivo):
     """Segundos que dura una vuelta de la animación (si ya está preparada)."""
-    datos = _pil_vault.get(archivo.name) if archivo else None
+    datos = _pil_vault.get(str(archivo)) if archivo else None
     return datos["dura"] if datos else 4.0
 
 
 def _pose():
-    ruta = CARPETA_VAULT / f"{POSE}.gif"
-    return ruta if ruta.exists() else None
+    return _av["pose"]
 
 
 def _siguiente_libre(ahora):
@@ -564,9 +550,9 @@ def _siguiente_libre(ahora):
     if not v["libre_pose"]:  # después de una animación (o al empezar): la pose
         archivo, dura = _pose(), random.uniform(*PAUSA_LIBRE)
     else:
-        opciones = [a for a in CARPETA_VAULT.glob("*.gif")
-                    if not a.stem.startswith(NO_ALEATORIAS) and a.stem != POSE
-                    and a != v["libre_archivo"]]
+        opciones = [a for cat, lista in _av["por_cat"].items()
+                    if cat not in NO_ALEATORIAS and cat != POSE
+                    for a in lista if a != v["libre_archivo"]]
         if not opciones:
             archivo, dura = _pose(), random.uniform(*PAUSA_LIBRE)
         else:
@@ -611,6 +597,7 @@ def _dibujar_vault(c, est, color, lado):
     animado, False si es una imagen quieta, o None si no hay imágenes (se dibuja el reactor)."""
     if not _usa_vault():
         return None
+    _refrescar_avatar()  # un GIF nuevo o el cambio de personaje se ven sin reiniciar
     ahora = time.time()
     clave, cat, fijo = _que_mostrar(est, ahora)
     if clave != _vista["clave"]:

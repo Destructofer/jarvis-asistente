@@ -11,6 +11,7 @@ from pathlib import Path
 
 import acciones  # [ACCION: categoria] de cada respuesta y el Vault Boy del HUD
 import apps
+import avatares  # los personajes animados del HUD (Documentos\Jarvis\Avatares)
 import archivos
 import cerebro
 import cognicion  # cuánto pensar, cómo pensar, aprender del usuario y contexto
@@ -301,6 +302,8 @@ GRUPOS = [
      r"donde esta|encuentra|cuenta|cuantos|cuantas|lee esta|lee este|leer esta|hoja|pizarron|"
      r"etiqueta|identifica|que es esto|vigila|avisame si|avisame cuando|peligro|riesgo",
      ["mirar", "escanear_entorno", "vigilar_camara", "crear_documento"]),
+    (r"avatar|personaje|vault boy|gif|animacion|tu muneco|tu dibujo",
+     ["cambiar_avatar", "listar_avatares", "clasificar_gif"]),
     # Preferencias e instrucciones permanentes (preferencias.py)
     (r"de ahora en adelante|a partir de ahora|desde ahora|en adelante|por defecto|predeterminad|"
      r"prefiero|preferencia|ya no uses|deja de usar|en lugar de|en vez de|siempre que|cada vez que|"
@@ -1730,6 +1733,7 @@ def main(persistente=False):
     apps.iniciar()       # índice de apps instaladas (en segundo plano)
     archivos.iniciar()   # índice de tus archivos (en segundo plano)
     mantenimiento.iniciar(cfg, lambda texto: avisar(cfg, texto), ocupado=lambda: presentando(cfg))
+    avatares.iniciar()   # prepara los GIF nuevos y vigila la carpeta de avatares
     hud.iniciar(cfg)
     descargas.iniciar(cfg)
 

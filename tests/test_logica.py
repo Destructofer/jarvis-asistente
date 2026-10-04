@@ -856,5 +856,47 @@ class MemoriaYPreferencias(unittest.TestCase):
         self.assertNotIn("De qué hablamos", r)  # las preguntas de memoria no tapan lo importante
 
 
+class Avatares(unittest.TestCase):
+    """Los GIF del avatar: categoría por nombre, quitar cualquier fondo liso y medir."""
+
+    def test_categoria_por_nombre(self):
+        import avatares
+        self.assertEqual(avatares.categoria_por_nombre("celebrando_baile"), "celebrando")
+        self.assertEqual(avatares.categoria_por_nombre("ejecutando_3"), "ejecutando")
+        self.assertEqual(avatares.categoria_por_nombre("libre_caminando"), "libre")
+        self.assertEqual(avatares.categoria_por_nombre("Espera"), "espera")
+        self.assertIsNone(avatares.categoria_por_nombre("cartas"))
+
+    def _personaje(self, fondo):
+        from PIL import Image, ImageDraw
+        im = Image.new("RGB", (120, 160), fondo)
+        d = ImageDraw.Draw(im)
+        d.ellipse((45, 10, 75, 40), fill=(240, 200, 150))
+        d.rectangle((48, 42, 72, 110), fill=(200, 40, 40))
+        d.rectangle((20, 120, 40, 150), fill=(90, 90, 90))  # un objeto más chico al lado
+        return im
+
+    def test_quita_fondos_de_color(self):
+        import avatares
+        for fondo in ((170, 210, 245), (255, 255, 255), (51, 51, 51)):
+            a = avatares.sin_fondo(self._personaje(fondo)).getchannel("A")
+            self.assertEqual(a.getpixel((2, 2)), 0, fondo)       # el fondo, transparente
+            self.assertEqual(a.getpixel((60, 80)), 255, fondo)   # el cuerpo, entero
+
+    def test_respeta_gif_transparente(self):
+        from PIL import Image
+        import avatares
+        im = Image.new("RGBA", (50, 50), (0, 0, 0, 0))
+        im.paste((10, 200, 10, 255), (15, 15, 35, 35))
+        a = avatares.sin_fondo(im).getchannel("A")
+        self.assertEqual((a.getpixel((2, 2)), a.getpixel((25, 25))), (0, 255))
+
+    def test_mide_al_personaje_no_al_objeto(self):
+        import avatares
+        alto, pies, centro = avatares._medir(avatares.sin_fondo(self._personaje((170, 210, 245))))
+        self.assertGreater(alto, 90)          # cabeza a cuerpo (unidos), no el objeto de 30 px
+        self.assertAlmostEqual(centro, 60, delta=6)
+
+
 if __name__ == "__main__":
     unittest.main()

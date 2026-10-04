@@ -1,57 +1,45 @@
-# Vault Boy del HUD
+# Avatares de Jarvis
 
-El ícono de Jarvis en la esquina de la pantalla es un Vault Boy sin fondo (solo el muñeco). Qué
-animación se ve, por prioridad:
+El ícono animado de la esquina es un **avatar**: un personaje con una animación para cada cosa
+que hace Jarvis. Los avatares viven en tu PC, fuera del repositorio:
 
-1. **La acción de la respuesta**, mientras Jarvis habla y unos segundos más. Jarvis termina cada
-   respuesta con `[ACCION: categoria]` (ver `acciones.py`).
-2. **`completado.gif` (pulgar arriba)** al terminar una acción que hizo con una herramienta y
-   salió bien (abrir una app, buscar, guardar un documento...).
-3. **El estado**: `pensando` mientras procesa una orden, `cyborg` al mirar por la cámara,
-   `confundido` si hay un error, `espera` mientras te escucha.
-4. **`descargando.gif` (el costal)** mientras se baja cualquier archivo a tu carpeta de Descargas
-   (navegadores, torrents, gestores de descargas), y el pulgar arriba cuando termina
-   (`descargas.py`).
-5. **Modo libre**: sin nada que hacer, Jarvis no se queda quieto: alterna la pose inicial y
-   rígida (`espera.gif`, de 2.5 a 5 s) con alguna de sus animaciones al azar, nunca dos
-   animaciones de corrido. `confundido`, `descargando` y `completado` no salen al azar, para que
-   signifiquen algo cuando aparecen. Los GIF que empiezan con `libre_` (como
-   `libre_caminando.gif`) solo salen en el modo libre.
+```
+Documentos\Jarvis\Avatares\
+    Vault Boy\        <- un personaje: sus GIF, con el nombre que quieras
+    Iron Man\         <- otro
+```
 
-Al pasar de una animación a otra distinta, siempre hay un momento (0.6 s) de pose rígida.
+**Para agregar una animación, solo suelta el GIF en la carpeta del personaje** (también con
+Jarvis encendido). En unos segundos `avatares.py` le quita el fondo (cualquier color liso; si ya
+es transparente, lo respeta), mide al personaje para que todos se vean del mismo tamaño y
+parados en la misma línea, decide qué acción representa y lo empieza a usar. Al borrar un GIF,
+deja de usarlo.
 
-Los GIF no vienen en el repositorio: Vault Boy es arte de Fallout (Bethesda) y el repo es
-público. Cada quien pone los suyos aquí con estos nombres (si falta alguno, no se muestra nada
-para ese caso):
+**Qué acción representa:** si el nombre empieza con una categoría (`celebrando_baile.gif`,
+`ejecutando_3.gif`) se usa esa; si no, Jarvis mira la animación y la clasifica. Si se equivoca:
+"Jarvis, ese GIF es de celebrando" o renombra el archivo.
 
-| Archivo | Cuándo sale |
+| Categoría | Cuándo sale |
 |---|---|
-| `espera.gif` | **Predeterminado**: descansando (puede ser una imagen fija) |
-| `saludo.gif` | Te saluda, inicia la conversación o está en espera |
-| `completado.gif` | Terminó una acción o una descarga |
-| `buscando.gif` | Busca información, navega o consulta datos |
-| `descargando.gif` | Se está bajando un archivo |
-| `pensando.gif` | Analiza, reflexiona o calcula algo complejo |
-| `ejecutando.gif` | Realiza una tarea técnica o ejecuta comandos |
-| `ciencia.gif` | Análisis técnicos, cálculos científicos o crea algo |
-| `cansado.gif` | Termina una tarea larga o te despides |
-| `confundido.gif` | No entiende algo o hubo un error |
-| `celebrando.gif` | Buena noticia o un éxito |
-| `tecnologia.gif` | Usa APIs, automatiza o interactúa con otros sistemas |
-| `cyborg.gif` | Interactúa con otras IAs o sistemas externos |
+| `espera` | **La pose quieta** entre animaciones (si no hay, usa el primer cuadro de otra) |
+| `saludo` | Te saluda o inicia la conversación |
+| `completado` | Terminó una acción o una descarga |
+| `buscando` · `pensando` · `ejecutando` · `ciencia` · `tecnologia` · `cyborg` | Según lo que hace (ver `acciones.py`) |
+| `cansado` | Termina algo largo o te despides |
+| `confundido` | No entendió o hubo un error |
+| `celebrando` | Una buena noticia o un éxito |
+| `descargando` | Se está bajando un archivo |
+| `libre` | Solo para el modo libre (animaciones al azar cuando no hace nada) |
 
-**Variantes:** una categoría puede tener varias animaciones (`ejecutando.gif`,
-`ejecutando_2.gif`, `ejecutando_3.gif`...) y cada vez se elige una al azar.
+Varias animaciones de la misma categoría se turnan al azar. `confundido`, `descargando` y
+`completado` no salen al azar, para que cuando aparezcan signifiquen algo.
 
-**Mismo tamaño:** `ajustes.json` dice dónde está el muñeco en cada GIF (alto de la coronilla a
-los pies, altura de los pies y centro). El HUD escala cada animación para que el muñeco mida
-siempre lo mismo y quede parado en la misma línea; los objetos de cada escena se acomodan
-alrededor. Si un GIF no está en `ajustes.json`, se calcula solo a partir del dibujo.
+**Varios personajes:** "Jarvis, usa el avatar de Iron Man" (lo recuerda como preferencia),
+"¿qué avatares tienes?". Lo que prepara Jarvis queda en `<personaje>\.jarvis\` (las versiones
+sin fondo y `avatar.json` con la categoría y las medidas de cada GIF; ahí se pueden corregir a
+mano las medidas en `figura`).
 
-**Sin fondo:** el HUD quita solo el fondo al cargar (en segundo plano al arrancar) y deja
-únicamente el muñeco. Funciona con el estilo de estos GIF: dibujo claro sobre un fondo liso
-oscuro (como el gris #333333 original), de unos 200 px de alto.
-
-Opciones en `config.json → hud`: `estilo` (`"vaultboy"`, o `"reactor"` para el reactor azul de
-antes, que también se usa si falta `espera.gif`), `vault_aleatorio` (el modo libre) y
-`vigilar_descargas` (el costal). El tamaño lo da `tamano`.
+Esta carpeta del repositorio (`vaultboy/`) solo se usa la primera vez: si tiene GIF de Vault Boy
+(con las medidas de `ajustes.json`), Jarvis los pasa a `Documentos\Jarvis\Avatares\Vault Boy\`.
+Los GIF no vienen en el repositorio porque Vault Boy es arte de Fallout (Bethesda) y el repo es
+público. Sin ningún avatar se ve el reactor azul de siempre (`config.json → hud.estilo`).

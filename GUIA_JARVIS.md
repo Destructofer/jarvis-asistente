@@ -323,14 +323,16 @@ Usa el mismo lector de cámara que los gestos y la presencia, y mientras está a
 ✋👋🤟 se pausan** (las manos son de la realidad aumentada). En `realidad.py`; las ventanas en
 vivo usan Windows Graphics Capture (`windows-capture`).
 
-## Vault Boy en el HUD
+## El avatar del HUD (`avatares.py`)
 
 Cada respuesta termina con `[ACCION: categoria]` (nunca se dice en voz alta) y el ícono de la
-esquina es un Vault Boy animado y sin fondo que cambia según la acción: saludo, buscando,
-pensando, ejecutando, ciencia, cansado, confundido, celebrando, tecnologia, cyborg; el costal
-cuando se baja un archivo y el pulgar arriba al terminar algo. Sin nada que hacer alterna la
-pose quieta con animaciones al azar. Los GIF no vienen en el repositorio (son arte de Fallout):
-ver `vaultboy/README.md`. Sin ellos se ve el reactor azul de siempre (`hud.estilo`).
+esquina es un personaje animado y sin fondo que cambia según la acción. Los personajes viven en
+**`Documentos\Jarvis\Avatares\<personaje>\`**: para agregar una animación, suelta el GIF en esa
+carpeta (también con Jarvis encendido) y en segundos le quita el fondo, lo mide para que todos
+se vean del mismo tamaño, decide qué acción representa (por el nombre del archivo o mirándolo)
+y lo empieza a usar. Puedes tener varios personajes: "Jarvis, usa el avatar de Iron Man". Si
+clasifica mal un GIF: "Jarvis, ese GIF es de celebrando". Detalles y categorías en
+`vaultboy/README.md`. Sin avatares se ve el reactor azul de siempre (`hud.estilo`).
 
 ## Qué le puedes decir
 
