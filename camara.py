@@ -127,6 +127,11 @@ class _Lector:
 
 _lector = _Lector()
 
+# Cuando otra parte de Jarvis ya tiene la webcam abierta (el modo de realidad aumentada),
+# pone aquí una función que devuelve su último cuadro (BGR de OpenCV). Windows no deja abrir
+# la misma cámara dos veces, así que mirar/escanear toman la foto de ahí.
+EXTERNO = None
+
 
 def calentar(cfg):
     """Abre la cámara por adelantado (al activar el modo expositor) para que la primera
@@ -248,7 +253,11 @@ def capturar(cfg, fuente=None):
     muestra y sirve para revisar después qué vio Jarvis)."""
     c = _conf(cfg)
     fuente = fuente or c.get("fuente", "webcam")
-    if fuente == "webcam":
+    cuadro = EXTERNO() if (EXTERNO is not None and fuente == "webcam") else None
+    if cuadro is not None:
+        import cv2
+        img = Image.fromarray(cv2.cvtColor(cuadro, cv2.COLOR_BGR2RGB))
+    elif fuente == "webcam":
         img = _lector.foto(int(c.get("webcam_indice", 0)))
     elif fuente == "ventana":
         img = _capturar_ventana(c.get("ventana_titulo", "WhatsApp"))

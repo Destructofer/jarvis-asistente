@@ -62,6 +62,7 @@ def calibrar_umbral(minimo=0.0025, segundos=2.0):
     except Exception as e:
         print(f"[No pude calibrar el micrófono ({type(e).__name__}); uso el umbral por defecto.]")
         return minimo
+    NIVELES.extend(niveles)  # el umbral dinámico arranca ya con el ruido real del cuarto
     niveles.sort()
     # percentil 25 en vez de la mediana: si justo durante la calibración hubo un ruido
     # puntual (un clic, una puerta), que no arrastre el umbral de todo el resto de la sesión
@@ -85,15 +86,37 @@ def ignorar_por(segundos):
     IGNORAR_HASTA = max(IGNORAR_HASTA, time.time() + segundos)
 
 
+# ---------- Umbral que sigue al ruido del cuarto ----------
+# Antes el umbral se medía una vez al arrancar y, si pasaban 30 s sin "voz", se bajaba solo...
+# hasta 0.003, aunque el ruido real del cuarto fuera 0.02-0.04. Con el umbral por debajo del
+# ruido, la grabación nunca encontraba silencio: grababa los 20 s máximos de ruido, Whisper
+# tardaba hasta 21 s en transcribirlo y las órdenes se pegaban entre sí. Ahora se lleva el
+# nivel de los últimos ~15 s y el umbral siempre queda por encima del piso de ruido real.
+NIVELES = deque(maxlen=150)   # volumen (RMS) de cada bloque de 0.1 s
+MARGEN_RUIDO = 2.5            # cuántas veces el ruido de fondo hace falta para contar como voz
+UMBRAL_MINIMO = 0.0035
+
+
+def umbral_actual(base):
+    """Umbral para este momento: base (calibrado) hasta tener datos, y luego el piso de ruido
+    de los últimos segundos (percentil 10: lo más bajo, sin los silencios absolutos) x margen."""
+    if len(NIVELES) < 30:
+        return base
+    piso = float(np.percentile(NIVELES, 10))
+    return max(UMBRAL_MINIMO, piso * MARGEN_RUIDO)
+
+
 def _grabar_de(stream, umbral, silencio_seg, max_seg, espera_seg, previo_inicial=None):
-    """Graba de un stream ya abierto: espera voz, graba y corta al quedarse en silencio."""
+    """Graba de un stream ya abierto: espera voz, graba y corta al quedarse en silencio.
+    umbral es el valor de partida; en cuanto hay datos del cuarto manda umbral_actual()."""
     bloque = int(SAMPLE_RATE * 0.1)  # bloques de 0.1 s
-    previo = deque(previo_inicial or [], maxlen=max(3, len(previo_inicial or [])))
+    previo = deque(previo_inicial or [], maxlen=max(4, len(previo_inicial or [])))
     frames = []
     hablando = False
     silencio = 0.0
     inicio = time.time()
     inicio_voz = None
+    umbral_vivo = umbral_actual(umbral)
 
     while True:
         if CANCELAR.is_set() or DESPERTAR.is_set():
@@ -104,8 +127,11 @@ def _grabar_de(stream, umbral, silencio_seg, max_seg, espera_seg, previo_inicial
             inicio = ahora  # el tiempo de espera cuenta desde que se deja de ignorar
             continue
         nivel = float(np.sqrt(np.mean(data ** 2)))
+        NIVELES.append(nivel)
+        if not hablando:  # mientras hablas el umbral no se mueve (no corta la frase a medias)
+            umbral_vivo = umbral_actual(umbral)
 
-        if nivel > umbral:
+        if nivel > umbral_vivo:
             if not hablando:
                 frames.extend(previo)
                 inicio_voz = ahora
@@ -211,19 +237,40 @@ def _normalizar(texto):
     return re.sub(r"\s+", " ", texto).strip()
 
 
-def esperar_palabra(palabras, modelo_wake="base", umbral=0.004, pista="Jarvis"):
+def _orden_de(audio, resto, palabras, modelo_orden, prompt_orden):
+    """'Jarvis, abre Spotify y pon música' dicho de corrido: la palabra se detectó con el
+    Whisper pequeño (barato, escucha todo el tiempo), pero ese modelo se come palabras de la
+    orden. Así que la MISMA grabación se vuelve a transcribir con el bueno (Groq si hay) y se le
+    quita el nombre. Si eso falla, se usa lo que entendió el pequeño."""
+    try:
+        texto = limpiar_texto(transcribir(audio, modelo_orden, prompt_orden, nube=True))
+    except Exception as e:
+        print(f"[No pude re-transcribir la orden ({type(e).__name__}); uso la del detector]")
+        return resto
+    orden = quitar_activacion(texto, palabras)
+    if orden == texto.strip():  # el nombre no iba al inicio ("abre Chrome, Jarvis")
+        alternativas = "|".join(re.escape(p) for p in palabras if p)
+        orden = re.sub(rf"\W*\b(?:{alternativas})\b\W*", " ", texto, flags=re.I).strip(" ,.")
+    return orden if len(_normalizar(orden)) >= 3 else resto
+
+
+def limpiar_texto(texto):
+    return re.sub(r"\s+", " ", texto or "").strip()
+
+
+def esperar_palabra(palabras, modelo_wake="base", umbral=0.004, pista="Jarvis",
+                    modelo_orden=None, prompt_orden=None):
     """Bloquea hasta oír la palabra de activación.
     Devuelve lo que dijiste después de ella ('' si solo la dijiste).
+    Con modelo_orden, la orden dicha junto con el nombre se re-transcribe con ese modelo
+    (o con Groq) para que llegue completa y bien escrita.
 
-    Si el umbral (calibrado o fijo) queda muy alto para el micrófono real, grabar() nunca ve
-    que empezaste a hablar y esto se queda en silencio sin hacer nada. Para no depender de
-    haber calibrado bien a la primera, cada par de intentos sin detectar ni una pizca de voz
-    se baja el umbral solo, hasta un piso seguro; en cuanto SÍ detecta voz (aunque no sea la
-    palabra de activación) se deja de bajar, porque ya demostró que a ese nivel funciona.
+    El umbral del micrófono lo ajusta solo umbral_actual() según el ruido real del cuarto
+    (antes se bajaba a ciegas tras cada rato de silencio y terminaba por debajo del ruido).
     """
     global DISPOSITIVO
+    originales = list(palabras)
     palabras = [_normalizar(p) for p in palabras]
-    intentos_sin_voz = 0
     while True:
         if DESPERTAR.is_set():
             DESPERTAR.clear()
@@ -232,7 +279,8 @@ def esperar_palabra(palabras, modelo_wake="base", umbral=0.004, pista="Jarvis"):
             time.sleep(0.5)
             continue
         try:
-            audio = grabar(umbral=umbral, silencio_seg=SILENCIO_SEG, max_seg=8, espera_seg=15)
+            # max_seg amplio: la orden completa puede ir en la misma frase que el nombre
+            audio = grabar(umbral=umbral, silencio_seg=SILENCIO_SEG, max_seg=20, espera_seg=15)
         except sd.PortAudioError as e:
             # Pasa al conectar/desconectar audífonos o al volver de suspensión. Antes esto
             # tumbaba todo el bucle; ahora se vuelve al micrófono de Windows y se reintenta.
@@ -243,17 +291,40 @@ def esperar_palabra(palabras, modelo_wake="base", umbral=0.004, pista="Jarvis"):
             time.sleep(3)
             continue
         if audio is None:
-            intentos_sin_voz += 1
-            if intentos_sin_voz % 2 == 0 and umbral > 0.003:
-                umbral = max(0.003, umbral * 0.65)
-                print(f"[No detecto voz hace rato; bajo el umbral del micrófono a {umbral:.4f}]")
             continue
-        intentos_sin_voz = 0
+        # Un golpe, un clic o una tos (< 0.25 s de voz) no pueden ser "Jarvis": no se gasta CPU en
+        # transcribirlos (Whisper corre en el procesador y compite con todo lo demás)
+        # (la grabación trae además ~0.4 s previos y el silencio final, que no son voz)
+        if len(audio) < SAMPLE_RATE * (0.25 + 0.4 + SILENCIO_SEG):
+            continue
         texto = _normalizar(transcribir(audio, modelo_wake, prompt=pista))
-        for p in palabras:
-            m = re.search(rf"\b{re.escape(p)}\b", texto)
-            if m:
-                return texto[m.end():].strip()
+        span = _buscar_nombre(texto, palabras)
+        if span:
+            inicio, fin = span
+            resto = texto[fin:].strip()
+            # Solo dijo el nombre (sin orden): no vale la pena re-transcribir
+            if modelo_orden and len(_normalizar(texto[:inicio] + " " + texto[fin:])) >= 4:
+                return _orden_de(audio, resto, originales, modelo_orden, prompt_orden)
+            return resto
+
+
+PARECIDO_NOMBRE = 0.8  # "yaervis" ~ "yarvis" 0.92; "travis" ~ "jarvis" 0.67; "davis" 0.73
+
+
+def _buscar_nombre(texto, palabras):
+    """(inicio, fin) del nombre dentro del texto, o None. Primero exacto contra la lista de
+    variantes; si no, por parecido: Whisper deforma "Jarvis" de muchas formas ("yaervis",
+    "jarbis"...) y con una lista exacta, cada deformación nueva hacía que no se activara."""
+    for p in palabras:
+        m = re.search(rf"\b{re.escape(p)}\b", texto)
+        if m:
+            return m.span()
+    for m in re.finditer(r"\w+", texto):
+        w = m.group()
+        if 5 <= len(w) <= 8 and any(SequenceMatcher(None, w, p).ratio() >= PARECIDO_NOMBRE
+                                    for p in palabras):
+            return m.span()
+    return None
 
 
 # ---------- Palabra de activación con openWakeWord ("hey Jarvis") ----------

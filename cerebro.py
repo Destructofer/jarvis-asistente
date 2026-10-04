@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import socket
 import time
 import uuid
@@ -138,21 +139,75 @@ def _motivo(e):
     return f"{type(e).__name__}: {t[:100]}"
 
 
+# ---------- Límites por minuto ----------
+# Antes, con el plan gratis de Groq, CADA orden probaba primero el modelo grande, recibía un 429
+# ("límite por minuto alcanzado") y recién entonces pasaba al de respaldo: una ida y vuelta
+# perdida en casi todas las órdenes. Ahora se anota hasta cuándo dijo Groq que esperemos y ese
+# modelo se salta hasta entonces. Lo usa también vision.py.
+_ENFRIADO = {}  # modelo -> momento (time.time()) en que vuelve a estar libre
+
+
+def _espera_de(e):
+    """Groq dice 'Please try again in 7.6s' (o '1m2.5s', o '350ms')."""
+    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)(ms|s)", str(e))
+    if not m:
+        return 20.0
+    seg = float(m.group(2)) / (1000 if m.group(3) == "ms" else 1) + 60 * int(m.group(1) or 0)
+    return min(120.0, seg + 0.3)
+
+
+def es_limite(e):
+    t = str(e)
+    return "429" in t or "rate limit" in t.lower()
+
+
+def marcar_limite(modelo, e):
+    _ENFRIADO[modelo] = time.time() + _espera_de(e)
+
+
+def libre_en(modelo):
+    """Segundos que faltan para que ese modelo vuelva a aceptar peticiones (0 = ya)."""
+    return max(0.0, _ENFRIADO.get(modelo, 0.0) - time.time())
+
+
+ESPERA_MAXIMA = 6.0  # si la nube se libera en menos que esto, conviene esperar y no ir al local
+
+
 def chat(cfg, history, tools, temperatura=0.2):
     """Devuelve {'content', 'tool_calls', 'origen'}. Prueba los cerebros en la nube en orden
-    y, si ninguno responde, el modelo local."""
+    (saltando los que Groq tiene en espera) y, si ninguno responde, el modelo local."""
     modo = cfg.get("modo", "auto")
     proveedores = _proveedores(cfg) if modo != "offline" else []
     usar_nube = bool(proveedores) and (modo == "online" or hay_internet())
 
     if usar_nube:
-        for prov in proveedores:
-            try:
-                r = _chat_nube(prov, history, tools, temperatura)
-                r["origen"] = f"nube · {prov['modelo']}"
-                return r
-            except Exception as e:
-                print(f"[{prov['modelo']} no respondió ({_motivo(e)}); pruebo el siguiente]")
+        libres = [p for p in proveedores if libre_en(p["modelo"]) == 0]
+        if not libres:
+            # Todos en espera: si alguno se libera pronto, esperar sale mucho más rápido que el
+            # modelo local (que con herramientas tarda de 10 a 30 s en CPU)
+            espera = min(libre_en(p["modelo"]) for p in proveedores)
+            if espera <= ESPERA_MAXIMA:
+                print(f"[Groq en espera; aguardo {espera:.1f} s]")
+                time.sleep(espera)
+                libres = [p for p in proveedores if libre_en(p["modelo"]) == 0]
+        for prov in libres:
+            for intento in (1, 2):
+                try:
+                    r = _chat_nube(prov, history, tools, temperatura)
+                    r["origen"] = f"nube · {prov['modelo']}"
+                    return r
+                except Exception as e:
+                    if es_limite(e):
+                        marcar_limite(prov["modelo"], e)
+                        print(f"[{prov['modelo']} en límite por minuto; libre en {libre_en(prov['modelo']):.0f} s]")
+                        break
+                    # "Tool call validation failed": el modelo armó mal los argumentos de una
+                    # herramienta. Suele salir bien al segundo intento, con menos temperatura.
+                    if intento == 1 and "validation" in str(e).lower():
+                        temperatura = 0.0
+                        continue
+                    print(f"[{prov['modelo']} no respondió ({_motivo(e)}); pruebo el siguiente]")
+                    break
 
     try:
         r = _chat_local(cfg, history, tools, temperatura)

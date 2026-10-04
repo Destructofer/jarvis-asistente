@@ -13,3 +13,6 @@ config.json
 # Modelo de voz (63 MB): se comparte aparte, no por git. Ver voces/README.md
 voces/*.onnx
 voces/*.onnx.json
+
+# Animaciones de Vault Boy (arte de Fallout/Bethesda): cada quien pone las suyas. Ver vaultboy/README.md
+vaultboy/*.gif

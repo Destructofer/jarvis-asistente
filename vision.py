@@ -70,6 +70,30 @@ def _local_varias(conf, sistema, instruccion, lista_b64):
     return r.message.content or ""
 
 
+def _por_nube(conf, llamar):
+    """Intenta la nube respetando su límite por minuto: si Groq pidió esperar pocos segundos,
+    espera (sale mucho más rápido que el modelo local, ~40 s en CPU); si es más, va directo al
+    local. Devuelve el texto, o None si hay que usar el modelo local."""
+    import time
+    modelo = conf.get("nube", {}).get("modelo", "")
+    for _ in range(2):
+        espera = cerebro.libre_en(modelo)
+        if espera > 8:
+            print(f"[Visión en la nube en espera {espera:.0f} s; uso el modelo local]")
+            return None
+        if espera:
+            time.sleep(espera)
+        try:
+            return _limpiar(llamar())
+        except Exception as e:
+            if cerebro.es_limite(e):
+                cerebro.marcar_limite(modelo, e)
+                continue
+            print(f"[La visión en la nube falló ({type(e).__name__}: {str(e)[:120]}); pruebo local]")
+            return None
+    return None
+
+
 def ver(cfg, img, instruccion, sistema):
     """Devuelve el texto que respondió el modelo de visión (o lanza RuntimeError)."""
     conf = cfg.get("vision", {}) or {}
@@ -80,10 +104,9 @@ def ver(cfg, img, instruccion, sistema):
     usar_nube = modo == "online" or (modo == "auto" and cerebro.hay_internet()
                                      and bool(os.environ.get(clave_env)))
     if usar_nube:
-        try:
-            return _limpiar(_nube(conf, sistema, instruccion, b64))
-        except Exception as e:
-            print(f"[La visión en la nube falló ({type(e).__name__}: {str(e)[:120]}); pruebo local]")
+        texto = _por_nube(conf, lambda: _nube(conf, sistema, instruccion, b64))
+        if texto is not None:
+            return texto
     try:
         return _limpiar(_local(conf, sistema, instruccion, b64))
     except Exception as e:
@@ -104,10 +127,9 @@ def ver_varias(cfg, imagenes, instruccion, sistema):
         lista.append(_b64(chica))
     clave_env = conf.get("nube", {}).get("clave_env", "")
     if modo == "online" or (modo == "auto" and cerebro.hay_internet() and os.environ.get(clave_env)):
-        try:
-            return _limpiar(_nube_varias(conf, sistema, instruccion, lista))
-        except Exception as e:
-            print(f"[La visión en la nube falló ({type(e).__name__}: {str(e)[:120]}); pruebo local]")
+        texto = _por_nube(conf, lambda: _nube_varias(conf, sistema, instruccion, lista))
+        if texto is not None:
+            return texto
     try:
         return _limpiar(_local_varias(conf, sistema, instruccion, lista))
     except Exception as e:

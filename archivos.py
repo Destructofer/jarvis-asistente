@@ -1,5 +1,6 @@
 """Buscar y abrir archivos y carpetas del equipo por nombre aproximado."""
 import os
+import subprocess
 import threading
 import time
 from difflib import SequenceMatcher
@@ -18,7 +19,9 @@ IGNORAR = {"node_modules", "__pycache__", "venv", "site-packages", "AppData", "W
 PELIGROSAS = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".msi", ".scr", ".com",
               ".lnk", ".reg", ".jar", ".dll", ".hta", ".wsf"}
 TIPOS = {
-    "documento": {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".odt", ".csv"},
+    "documento": {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".txt", ".odt",
+                  ".ods", ".odp", ".csv", ".rtf", ".md", ".json", ".xml", ".html", ".htm", ".epub"},
+    "comprimido": {".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz"},
     "imagen": {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic"},
     "video": {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm"},
     "musica": {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac"},
@@ -73,12 +76,32 @@ def _recorrer(raices, limite_seg):
     return entradas
 
 
+_renovando = set()
+
+
+def _renovar(ambito):
+    try:
+        ent = _recorrer(_raices(ambito), 25 if ambito == "equipo" else 15)
+        with _lock:
+            _indices[ambito] = (time.time(), ent)
+    finally:
+        _renovando.discard(ambito)
+
+
 def _indice(ambito, forzar=False):
+    """Índice de archivos. Si ya hay uno pero está viejo (más de VIGENCIA), se responde con él
+    al instante y se renueva en segundo plano: antes, cada 10 minutos una búsqueda se quedaba
+    hasta 15 s recorriendo el disco antes de contestar. Solo se espera si no hay índice o si
+    se pide forzar (p. ej. al no encontrar un archivo recién creado)."""
     with _lock:
         t, ent = _indices.get(ambito, (0, []))
-        if forzar or not ent or time.time() - t > VIGENCIA:
+        if forzar or not ent:
             ent = _recorrer(_raices(ambito), 25 if ambito == "equipo" else 15)
             _indices[ambito] = (time.time(), ent)
+            return ent
+        if time.time() - t > VIGENCIA and ambito not in _renovando:
+            _renovando.add(ambito)
+            threading.Thread(target=_renovar, args=(ambito,), daemon=True, name="indice-archivos").start()
         return ent
 
 
@@ -146,7 +169,7 @@ def _buscar_con_reintento(consulta, tipo, ambito):
        "Documentos, Descargas, Imágenes, Música y Vídeos.",
        {"consulta": {"type": "string", "description": "Palabras del nombre del archivo"},
         "tipo": {"type": "string",
-                 "enum": ["cualquiera", "documento", "imagen", "video", "musica", "carpeta"],
+                 "enum": ["cualquiera", "documento", "imagen", "video", "musica", "comprimido", "carpeta"],
                  "description": "Tipo de elemento (opcional)"},
         "todo_el_equipo": {"type": "boolean",
                            "description": "true para buscar en todos los discos (más lento)"}},
@@ -169,7 +192,7 @@ def buscar_archivo(consulta, tipo="cualquiera", todo_el_equipo=False):
        {"consulta": {"type": "string", "description": "Nombre aproximado del archivo"},
         "numero": {"type": "integer", "description": "Número del resultado de la última búsqueda"},
         "tipo": {"type": "string",
-                 "enum": ["cualquiera", "documento", "imagen", "video", "musica", "carpeta"],
+                 "enum": ["cualquiera", "documento", "imagen", "video", "musica", "comprimido", "carpeta"],
                  "description": "Tipo de elemento (opcional)"}},
        requeridos=[])
 def abrir_archivo(consulta="", numero=0, tipo="cualquiera"):
@@ -190,9 +213,29 @@ def abrir_archivo(consulta="", numero=0, tipo="cualquiera"):
     _, _, nombre, ruta, es_dir = elegido
     if not es_dir and os.path.splitext(nombre)[1].lower() in PELIGROSAS:
         return f"'{nombre}' es un ejecutable o acceso directo; no lo abro desde una búsqueda."
-    os.startfile(ruta)
     aviso = f" Había {otros} coincidencias más; abrí la mejor." if otros else ""
+    try:
+        os.startfile(ruta)
+    except OSError:
+        # Windows no tiene un programa asociado a esa extensión (un .log, un .json, un .md...)
+        if es_dir:
+            raise
+        if _parece_texto(ruta):
+            subprocess.Popen(["notepad.exe", ruta])
+            return f"Abriendo {_describir(elegido)} en el Bloc de notas.{aviso}"
+        os.startfile(ruta, "openas")  # el cuadro "¿Con qué programa quieres abrirlo?"
+        return f"No hay un programa para '{nombre}'; te dejé elegir con cuál abrirlo.{aviso}"
     return f"Abriendo {_describir(elegido)}.{aviso}"
+
+
+def _parece_texto(ruta):
+    """True si los primeros bytes son texto legible (sin bytes nulos de un binario)."""
+    try:
+        with open(ruta, "rb") as f:
+            inicio = f.read(4096)
+    except OSError:
+        return False
+    return inicio.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" not in inicio  # UTF-16 trae nulos
 
 
 if __name__ == "__main__":
