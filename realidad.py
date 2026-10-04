@@ -20,8 +20,17 @@ Gestos (la cámara te ve como en un espejo; el anillo es tu cursor):
   interactiva es la que tiene el foco.
 - Salir: botón Salir, decirlo, o mantener Esc un segundo.
 
+Animación (todo con resortes, independiente de los fps):
+- Agarrar = el panel se levanta (sombra). Arrastrar = se inclina en 3D hacia donde va, se
+  balancea como colgado de la mano y su borde delantero brilla. Soltar en movimiento = inercia
+  con rebote, sin salirse de la pantalla. Quieto, se dibuja directo (la deformación en
+  perspectiva solo cuesta mientras se mueve).
+- Iconos del dock elásticos y con rebote mientras abre su app; botones que se hunden; ondas en
+  cada toque; anillo del cursor que se cierra al juntar los dedos; scroll con inercia.
+
 Cómo está hecho:
-- MediaPipe detecta 21 puntos por mano (~18 ms en CPU); OpenCV dibuja a 1280x720.
+- MediaPipe detecta 21 puntos por mano (~18 ms en CPU); OpenCV dibuja a 1280x720 (~10-15 ms).
+  La interfaz se dibuja a 30 fps aunque la cámara entregue menos (poca luz).
 - Las ventanas se ven con Windows Graphics Capture (la API de OBS/Teams): la GPU entrega la
   ventana aunque esté tapada, en cuanto cambia. La interactiva llega a ~60 fps; las demás a 4.
   Si una ventana no lo permite, se usa PrintWindow cada segundo.
@@ -150,16 +159,26 @@ def _pegar_bgr(canvas, img, x, y):
         canvas[y0:y1, x0:x1] = img[y0 - y:y1 - y, x0 - x:x1 - x]
 
 
-@lru_cache(maxsize=512)
+def _pegar_en(destino, src, x, y):
+    """Copia src dentro de destino en (x, y), recortando lo que se salga."""
+    h, w = src.shape[:2]
+    alto, ancho = destino.shape[:2]
+    x0, y0, x1, y1 = max(0, x), max(0, y), min(ancho, x + w), min(alto, y + h)
+    if x1 > x0 and y1 > y0:
+        destino[y0:y1, x0:x1] = src[y0 - y:y1 - y, x0 - x:x1 - x]
+
+
+@lru_cache(maxsize=96)  # una por tamaño: el panel grande ocupa ~0.6 MB (con 512 llegaba a 290 MB)
 def _mascara(w, h, r):
-    """Máscara booleana (h, w, 1) de un rectángulo redondeado."""
+    """Máscara (h, w) de 8 bits de un rectángulo redondeado (255 = dentro), para cv2.copyTo:
+    con una máscara booleana de numpy, np.copyto tardaba 9 ms en el panel grande; así, 0.1."""
     m = np.zeros((h, w), np.uint8)
     r = max(1, min(r, w // 2, h // 2))
     cv2.rectangle(m, (r, 0), (w - r - 1, h - 1), 255, -1)
     cv2.rectangle(m, (0, r), (w - 1, h - r - 1), 255, -1)
     for cx, cy in ((r, r), (w - r - 1, r), (r, h - r - 1), (w - r - 1, h - r - 1)):
         cv2.circle(m, (cx, cy), r, 255, -1)
-    return (m > 127)[..., None]
+    return m
 
 
 def _vidrio(canvas, x, y, w, h, radio=18, tinte=(60, 40, 25), fuerza=0.45):
@@ -176,7 +195,50 @@ def _vidrio(canvas, x, y, w, h, radio=18, tinte=(60, 40, 25), fuerza=0.45):
     chico = cv2.add(cv2.convertScaleAbs(cv2.GaussianBlur(chico, (0, 0), 2), alpha=1 - fuerza),
                     tuple(float(t) * fuerza for t in tinte) + (0.0,))
     vidrio = cv2.resize(chico, (rw, rh), interpolation=cv2.INTER_LINEAR)
-    np.copyto(roi, vidrio, where=m)
+    cv2.copyTo(vidrio, m, roi)
+
+
+@lru_cache(maxsize=24)
+def _sombra_sprite(w, h, r):
+    """Sombra difusa (3 canales, 0-255) de un panel de w x h, con 24 px de margen."""
+    b = 24
+    m = np.zeros((h + 2 * b, w + 2 * b), np.uint8)
+    m[b:b + h, b:b + w] = _mascara(w, h, r)
+    m = cv2.GaussianBlur(m, (0, 0), 10)
+    return cv2.merge([m, m, m])
+
+
+def _sombra(canvas, x, y, w, h, r, fuerza):
+    """Oscurece el fondo bajo un panel "levantado". El tamaño va en escalones de 16 px para
+    reutilizar la sombra ya difuminada mientras el panel crece o se encoge."""
+    if fuerza <= 0.01 or w < 8 or h < 8:
+        return
+    qw, qh = max(16, int(w) // 16 * 16), max(16, int(h) // 16 * 16)
+    sp = _sombra_sprite(qw, qh, min(r, qw // 2, qh // 2))
+    x, y = int(x + (w - qw) / 2) - 24, int(y + (h - qh) / 2) - 24
+    sh, sw = sp.shape[:2]
+    x0, y0, x1, y1 = max(0, x), max(0, y), min(W, x + sw), min(H, y + sh)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return
+    roi = canvas[y0:y1, x0:x1]
+    oscuro = cv2.multiply(roi, sp[y0 - y:y1 - y, x0 - x:x1 - x], scale=min(1.0, fuerza) / 255)
+    cv2.subtract(roi, oscuro, dst=roi)
+
+
+def _resorte(x, v, objetivo, dt, rigidez, amortiguacion):
+    """Un paso de resorte amortiguado (sube y se pasa un poquito, como en iOS/visionOS).
+    En pasos de 1/120 s para que no se vuelva inestable si un cuadro tarda."""
+    pasos = max(1, int(math.ceil(dt * 120)))
+    h = dt / pasos
+    for _ in range(pasos):
+        v += (rigidez * (objetivo - x) - amortiguacion * v) * h
+        x += v * h
+    return x, v
+
+
+def _suave(dt, rapidez):
+    """Fracción para acercarse a un objetivo independiente de los fps (1 - e^-rapidez·dt)."""
+    return 1.0 - math.exp(-rapidez * dt)
 
 
 def _borde(canvas, x, y, w, h, r, color, grosor=1):
@@ -393,9 +455,18 @@ class Captura:
         self.fallo = False
         self._ctl = None
         self._sesion = 0
+        self.cerrada = False    # ya no se vuelve a iniciar (la ventana o el modo terminaron)
+        # Se reinicia desde otro hilo (para no trabar el dibujo): sin candado, dos reinicios a
+        # la vez dejaban una captura huérfana entregando cuadros
+        self._lock = threading.Lock()
 
     def iniciar(self, rapida=False):
-        self.detener()
+        with self._lock:
+            if not self.cerrada:
+                self._iniciar(rapida)
+
+    def _iniciar(self, rapida):
+        self._detener()
         self.rapida = rapida
         self._sesion += 1
         sesion = self._sesion
@@ -432,7 +503,12 @@ class Captura:
             self._ctl = None
             self.fallo = True
 
-    def detener(self):
+    def cerrar(self):
+        with self._lock:
+            self.cerrada = True
+            self._detener()
+
+    def _detener(self):
         ctl, self._ctl = self._ctl, None
         if ctl is not None:
             try:
@@ -447,6 +523,7 @@ class Elemento:
         self.tipo, self.titulo = tipo, titulo
         self.cx = self.tcx = float(cx)
         self.cy = self.tcy = float(cy)
+        self.casa = (float(cx), float(cy))   # lugar fijo de los iconos del dock
         self.w0, self.h0 = w, h
         self.escala = self.tescala = 1.0
         self.icono, self.hwnd, self.accion, self.claves = icono, hwnd, accion, claves
@@ -454,16 +531,32 @@ class Elemento:
         self.mini_pw, self.t_pw = None, 0.0   # captura de respaldo (PrintWindow)
         self.interactiva = False
         self.hover = 0.0
+        self.lupa = 0.14 if tipo == "app" else 0.05   # cuánto crece con la mano encima
         self.pulso = 0.0
         self.agarrado = 0
         self.encima = False
+        self.abierta = False  # (iconos) su app tiene una ventana abierta: lo calcula el hilo de ventanas
         self.botones = {}     # nombre -> rect, en la barra de título
         self.zona = None      # rect (x, y, w, h) de la imagen de la ventana dentro del panel
         self.barra = None     # rect de la barra de título
         self.cache_mini = None
+        # --- física de la animación ---
+        self.vcx = self.vcy = self.ves = 0.0   # velocidades de los resortes
+        self.vx = self.vy = 0.0                # velocidad en pantalla (px/s), suavizada
+        self.giro = self.vgiro = 0.0           # balanceo como péndulo (grados)
+        self.yaw = self.pitch = 0.0            # inclinación 3D hacia donde va (radianes)
+        self.alzado = 0.0                      # 0-1: levantado al agarrarlo (sombra, crece)
+        self.presion = 0.0                     # 0-1: hundido mientras lo pellizcas
+        self.presionado = False
+        self.encoger, self.tencoger = 1.0, 1.0  # se "absorbe" sobre Llevar al escritorio
+        self.pivote = None
+        self.alfa, self.talfa = 1.0, 1.0
+        self.saltando = False                  # icono de una app que se está abriendo
+        self.cerrando = 0.0                    # momento en que se pidió cerrarla
+        self.t0 = time.time()
 
     def rect(self):
-        k = self.escala * (1 + 0.05 * self.hover)
+        k = self.escala * (1 + self.lupa * self.hover)
         w, h = self.w0 * k, self.h0 * k
         return int(self.cx - w / 2), int(self.cy - h / 2), int(w), int(h)
 
@@ -476,12 +569,71 @@ class Elemento:
             return self.captura.cuadro
         return self.mini_pw
 
-    def animar(self):
-        suave = 0.55 if self.agarrado else 0.22
-        self.cx += (self.tcx - self.cx) * suave
-        self.cy += (self.tcy - self.cy) * suave
-        self.escala += (self.tescala - self.escala) * 0.25
-        self.pulso = max(0.0, self.pulso - 0.06)
+    def animar(self, dt):
+        px, py = self.cx, self.cy
+        if self.agarrado:
+            # Pegado a la mano (rápido), pero sin teletransportarse
+            a = _suave(dt, 28)
+            self.cx += (self.tcx - self.cx) * a
+            self.cy += (self.tcy - self.cy) * a
+            self.vcx, self.vcy = (self.cx - px) / dt, (self.cy - py) / dt
+        else:
+            # Suelto: resorte. Al acomodarse o al lanzarlo llega con un pequeño rebote
+            self.cx, self.vcx = _resorte(self.cx, self.vcx, self.tcx, dt, 190, 24)
+            self.cy, self.vcy = _resorte(self.cy, self.vcy, self.tcy, dt, 190, 24)
+        self.escala, self.ves = _resorte(self.escala, self.ves, self.tescala, dt, 230, 21)
+        self.escala = max(0.05, self.escala)
+        a = _suave(dt, 16)
+        self.vx += ((self.cx - px) / dt - self.vx) * a
+        self.vy += ((self.cy - py) / dt - self.vy) * a
+        # Hacia donde lo arrastras: el borde de adelante se va hacia atrás (como una hoja que
+        # corta el aire) y cuelga de la mano como un péndulo; los paneles grandes, menos
+        f = float(np.clip(420 / max(1.0, self.w0 * self.escala, self.h0 * self.escala), 0.3, 1.0))
+        a = _suave(dt, 12)
+        self.yaw += (float(np.clip(self.vx / 2600, -0.45, 0.45)) * f - self.yaw) * a
+        self.pitch += (float(np.clip(self.vy / 2600, -0.45, 0.45)) * f - self.pitch) * a
+        self.giro, self.vgiro = _resorte(self.giro, self.vgiro,
+                                         float(np.clip(self.vx * 0.006, -9, 9)) * f, dt, 170, 11)
+        meta = 1.0 if self.agarrado and self.tipo == "ventana" else (0.6 if self.agarrado else 0.0)
+        a = _suave(dt, 12)
+        self.alzado += (meta - self.alzado) * a
+        self.encoger += (self.tencoger - self.encoger) * a
+        self.alfa += (self.talfa - self.alfa) * _suave(dt, 10)
+        self.presion += ((1.0 if self.presionado else 0.0) - self.presion) * _suave(dt, 25)
+        self.pulso = max(0.0, self.pulso - dt * 1.8)
+
+    def deformacion(self, x, y, w, h, ahora):
+        """Esquinas (4x2) del panel ya inclinado / balanceado / levantado, o None si está
+        quieto (entonces se dibuja directo, sin el costo de deformarlo)."""
+        s = (1 + 0.035 * self.alzado) * (1 - 0.07 * self.presion) * self.encoger
+        salto = -abs(math.sin((ahora - self.t0) * 7)) * 16 if self.saltando else 0.0
+        vel = math.hypot(self.vx, self.vy)
+        estira = min(0.06, vel / 15000) if self.agarrado or vel > 600 else 0.0
+        if (abs(s - 1) < 0.004 and abs(self.giro) < 0.25 and abs(self.yaw) < 0.006
+                and abs(self.pitch) < 0.006 and salto == 0 and estira < 0.004):
+            return None
+        cx0, cy0 = x + w / 2, y + h / 2
+        px, py = self.pivote if (self.pivote and self.encoger < 0.995) else (cx0, cy0)
+        foco = 1500.0
+        cyw, syw = math.cos(self.yaw), math.sin(self.yaw)
+        cp, sp = math.cos(self.pitch), math.sin(self.pitch)
+        g = math.radians(self.giro)
+        cr, sr = math.cos(g), math.sin(g)
+        dx, dy = (self.vx / vel, self.vy / vel) if vel > 1 else (1.0, 0.0)
+        res = []
+        for u, v in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)):
+            X, Z = u * cyw, u * syw
+            Y, Z = v * cp, Z + v * sp
+            k = foco / max(200.0, foco + Z)
+            X, Y = X * k, Y * k
+            X, Y = X * cr - Y * sr, X * sr + Y * cr
+            if estira:  # se estira en la dirección del movimiento y se adelgaza a lo ancho
+                pr, pn = X * dx + Y * dy, -X * dy + Y * dx
+                pr, pn = pr * (1 + estira), pn * (1 - estira / 2)
+                X, Y = pr * dx - pn * dy, pr * dy + pn * dx
+            gx, gy = cx0 + X, cy0 + Y
+            res.append((px + (gx - px) * s, py + (gy - py) * s + salto))
+        return np.float32(res)
 
 
 def _dentro(r, x, y):
@@ -503,6 +655,8 @@ class Mano:
         self.boton = None         # botón de la barra de título donde empezó el pellizco
         self.ult = (0, 0)
         self.acumulado = 0.0
+        self.vx = self.vy = 0.0   # velocidad de la mano (px/s): lanzar ventanas, scroll con inercia
+        self.razon = 1.0          # apertura pulgar-índice (para que el anillo "se cierre")
 
 
 class Escena:
@@ -525,14 +679,24 @@ class Escena:
         self.t_cursor = 0.0
         self.t_esc = None
         self._resultado = None    # (resultado de MediaPipe, ya procesado?)
+        self.ondas = []           # [x, y, t0, color, radio]: el "toque" se ve
+        self.salientes = []       # ventanas cerradas que se están desvaneciendo
+        self.inercia = None       # scroll que sigue solo tras deslizar rápido
+        self.zona_a = 0.0         # aparición de "Llevar al escritorio"
+        self.t_aviso0 = 0.0
+        self.hilo_v = None
 
     # --- armado y orden ---
     def _armar(self):
         n = len(DOCK)
         for i, (nombre, fn, claves) in enumerate(DOCK):
-            self.elementos.append(Elemento("app", nombre, W / 2 - (n - 1) * 55 + i * 110, H - 62, 92, 84,
-                                           _icono_marca(nombre), accion=fn, claves=claves))
-        self.elementos.append(Elemento("accion", "Salir", W - 78, 38, 110, 42, accion=self.parar.set))
+            e = Elemento("app", nombre, W / 2 - (n - 1) * 55 + i * 110, H - 62, 92, 84,
+                         _icono_marca(nombre), accion=fn, claves=claves)
+            e.cy = H + 90 + i * 45  # entran subiendo desde abajo, uno tras otro
+            self.elementos.append(e)
+        salir = Elemento("accion", "Salir", W - 78, 38, 110, 42, accion=self.parar.set)
+        salir.cy = -50
+        self.elementos.append(salir)
 
     def _ventanas(self):
         return [e for e in self.elementos if e.tipo == "ventana"]
@@ -588,8 +752,11 @@ class Escena:
             for h, e in actuales.items():
                 if h not in hwnds:
                     if e.captura:
-                        e.captura.detener()
+                        e.captura.cerrar()
                     self.elementos.remove(e)
+                    if e.alfa > 0.1:  # se desvanece encogiéndose en vez de desaparecer de golpe
+                        e.talfa, e.tescala, e.agarrado = 0.0, e.escala * 0.55, 0
+                        self.salientes.append((e, time.time()))
                 else:
                     e.titulo = control._titulo(h) or e.titulo
             for h in hwnds:
@@ -601,13 +768,20 @@ class Escena:
                 except Exception:
                     exe = None
                 e = Elemento("ventana", titulo, W / 2, H / 2, 300, 210, _icono(exe, 22, titulo[:1]), hwnd=h)
-                e.escala = 0.2  # aparece "creciendo"
+                e.escala, e.alfa = 0.2, 0.0  # aparece creciendo y haciéndose visible
                 e.captura = Captura(h)
+                if self.parar.is_set():
+                    break
                 e.captura.iniciar(rapida=False)
                 self.elementos.insert(0, e)
                 nuevas.append(e)
         if nuevas or len(actuales) != len(hwnds):
             self._organizar()
+        # El puntito de "abierta" del dock: se calcula aquí (cada 1.2 s) y no al dibujar, donde
+        # eran 24 consultas a Windows por cuadro (título y proceso de cada ventana x 3 iconos)
+        ventanas = self._ventanas()
+        for e in [e for e in self.elementos if e.tipo == "app"]:
+            e.abierta = any(_coincide(v.hwnd, e.claves) for v in ventanas)
         if self.esperando and time.time() < self.esperando[1]:
             for e in self._ventanas():
                 if _coincide(e.hwnd, self.esperando[0]):
@@ -641,20 +815,26 @@ class Escena:
 
     # --- acciones ---
     def _avisar(self, texto, seg=2.5):
-        self.aviso, self.t_aviso = texto, time.time() + seg
+        ahora = time.time()
+        if texto != self.aviso or ahora >= self.t_aviso:
+            self.t_aviso0 = ahora  # (si es el mismo aviso que ya se ve, no vuelve a entrar)
+        self.aviso, self.t_aviso = texto, ahora + seg
 
     def _activar(self, e):
         """Abre la ventana grande e interactiva y pone la ventana real al frente (debajo de la
         capa transparente) para que los clics de tus manos le lleguen."""
         import win32con
         import win32gui
+        cambios = []
         with self.lock:
             for o in self._ventanas():
                 if o.interactiva and o is not e:
                     o.interactiva = False
-                    o.captura.iniciar(rapida=False)
+                    cambios.append((o.captura, False))
             e.interactiva = True
-            e.captura.iniciar(rapida=True)
+            e.cerrando = 0.0
+            cambios.append((e.captura, True))
+        self._recapturar(cambios)
         try:
             if win32gui.IsIconic(e.hwnd):
                 win32gui.ShowWindow(e.hwnd, win32con.SW_RESTORE)
@@ -667,9 +847,18 @@ class Escena:
         threading.Thread(target=control.traer_al_frente, args=(e.hwnd,), daemon=True).start()
         self._organizar()
 
+    def _recapturar(self, cambios):
+        """Reinicia capturas [(Captura, rápida)] en otro hilo: arrancar Windows Graphics
+        Capture tarda decenas de ms y trababa la animación justo al tocar una ventana."""
+        def hacer():
+            for cap, rapida in cambios:
+                if cap is not None and not self.parar.is_set():
+                    cap.iniciar(rapida=rapida)
+        threading.Thread(target=hacer, daemon=True, name="realidad-captura").start()
+
     def _reducir(self, e):
         e.interactiva = False
-        e.captura.iniciar(rapida=False)
+        self._recapturar([(e.captura, False)])
         self._organizar()
 
     def _cerrar_ventana(self, e):
@@ -678,6 +867,9 @@ class Escena:
         try:
             win32gui.PostMessage(e.hwnd, win32con.WM_CLOSE, 0, 0)
             self._avisar(f"Cerrando {e.titulo[:40]}")
+            # Se encoge y se apaga un poco mientras la app cierra (si pregunta "¿guardar?",
+            # vuelve a la normalidad en unos segundos)
+            e.cerrando, e.talfa = time.time(), 0.55
         except Exception as err:
             self._avisar(f"No pude cerrarla: {err}", 3)
 
@@ -762,15 +954,21 @@ class Escena:
         zx, zy, zw, zh = self._zona_escritorio()
         return zx <= x <= zx + zw and zy <= y <= zy + zh + 20
 
+    def _onda(self, x, y, color=CIAN_FUERTE, radio=34):
+        self.ondas.append([int(x), int(y), time.time(), color, radio])
+        del self.ondas[:-8]
+
     def _presionar(self, clave, x, y):
         m = self.manos[clave]
         m.pinza, m.t0, m.p0, m.ult = True, time.time(), (x, y), (x, y)
         m.desplazando = m.raton_abajo = False
         m.acumulado = 0.0
+        self.inercia = None  # un pellizco nuevo frena el scroll que seguía solo
         e = self._bajo(x, y)
         m.elem, m.modo = e, None
         m.boton = None
         if e is None:
+            self._onda(x, y, CIAN, 22)
             return
         if e.tipo == "ventana":
             m.boton = next((n for n, r in e.botones.items() if _dentro(r, x, y)), None)
@@ -778,9 +976,11 @@ class Escena:
             m.modo = "contenido"   # dentro de la ventana: clic / scroll / arrastrar real
             return
         m.modo = "mover"
+        self._onda(x, y, CIAN, 26)
         with self.lock:  # lo agarrado pasa al frente
-            self.elementos.remove(e)
-            self.elementos.append(e)
+            if e in self.elementos:  # (el hilo de ventanas pudo quitarla en este instante)
+                self.elementos.remove(e)
+                self.elementos.append(e)
         e.agarrado += 1
         otra = next((o for k, o in self.manos.items()
                      if k != clave and o.pinza and o.elem is e and o.modo == "mover"), None)
@@ -798,14 +998,19 @@ class Escena:
         if m.modo == "contenido":
             self._mover_contenido(m, e, x, y)
             return
-        if e.tipo == "accion":
-            return
+        if e.tipo == "accion" or m.boton:
+            return  # en un botón de la barra (X, Reducir...) el pellizco no arrastra la ventana
         otra = next((o for k, o in self.manos.items()
                      if k != clave and o.pinza and o.elem is e and o.modo == "mover"), None)
         if otra is not None and m.d0:
             d = math.dist((x, y), (otra.x, otra.y))
             e.tescala = float(np.clip(m.esc0 * d / m.d0, 0.45, 3.6))
             e.tcx, e.tcy = (x + otra.x) / 2, (y + otra.y) / 2
+        elif e.tipo == "app":
+            # Los iconos del dock son elásticos: se estiran hacia la mano y al soltarlos regresan
+            hx, hy = x + m.off[0], y + m.off[1]
+            e.tcx = e.casa[0] + (hx - e.casa[0]) * 0.4
+            e.tcy = e.casa[1] + (hy - e.casa[1]) * 0.4
         else:
             e.tcx, e.tcy = x + m.off[0], y + m.off[1]
 
@@ -816,6 +1021,7 @@ class Escena:
                 if self._ir(e, *m.p0):                 # mantener quieto = agarrar (arrastrar)
                     _boton_izq(True)
                     m.raton_abajo = True
+                    self._onda(*m.p0, NARANJA, 30)
             elif not quieto:
                 m.desplazando = True                   # moverse enseguida = scroll
                 self._ir(e, *m.p0)
@@ -829,6 +1035,27 @@ class Escena:
                 m.acumulado = 0.0
         m.ult = (x, y)
 
+    def _lanzar(self, e):
+        """Soltar una ventana en movimiento la deja seguir un poco (inercia) y, si iba a salir
+        de la pantalla, rebota para que su barra siga a tu alcance."""
+        _, _, w, h = e.rect()
+        e.vcx, e.vcy = e.vx, e.vy
+        e.tcx = float(np.clip(e.cx + e.vx * 0.16, 0, W))
+        e.tcy = float(np.clip(e.cy + e.vy * 0.16, h / 2, max(h / 2, H - 40 + h / 2)))
+
+    def _seguir_inercia(self, dt):
+        i = self.inercia
+        if i is None:
+            return
+        if not i["e"].interactiva or abs(i["v"]) < 250 or time.time() - i["t"] > 2.0:
+            self.inercia = None
+            return
+        i["acum"] += i["v"] * dt
+        i["v"] *= math.exp(-3.2 * dt)
+        if abs(i["acum"]) >= 40:
+            _rueda(i["acum"])
+            i["acum"] = 0.0
+
     def _soltar(self, clave, x, y, cancelar=False):
         m = self.manos[clave]
         e, modo = m.elem, m.modo
@@ -839,20 +1066,30 @@ class Escena:
             m.raton_abajo = False
         if e is None:
             return
+        rapido = time.time() - m.t0 < TOQUE_SEG and math.dist(m.p0, (x, y)) < TOQUE_PX
         if modo == "contenido":
-            if not cancelar and not m.desplazando and time.time() - m.t0 < TOQUE_SEG \
-                    and math.dist(m.p0, (x, y)) < TOQUE_PX:
+            if not cancelar and not m.desplazando and rapido:
                 if self._ir(e, *m.p0):                 # toque = clic real
                     _boton_izq(True)
                     _boton_izq(False)
                     e.pulso = 0.6
+                    self._onda(*m.p0, NARANJA, 40)
+            elif not cancelar and m.desplazando:
+                # Deslizar rápido y soltar: el scroll sigue solo y se frena, como en el celular
+                v = m.vy * SCROLL_POR_PX * max(1.0, e.escala / 2)
+                if abs(v) > 900:
+                    self.inercia = {"e": e, "v": v, "t": time.time(), "acum": m.acumulado}
             return
         e.agarrado = max(0, e.agarrado - 1)
+        e.tencoger, e.pivote = 1.0, None
+        if e.tipo == "app" and not e.agarrado:
+            e.tcx, e.tcy = e.casa   # el icono regresa a su lugar con un rebote
         if cancelar:
             return
         if e.tipo == "ventana" and m.boton == "Cerrar":
             # Cerrar una ventana real con un pellizco accidental sería grave: hay que mantenerlo
             if time.time() - m.t0 >= MANTENER_SALIR and _dentro(e.botones.get("Cerrar"), x, y):
+                self._onda(x, y, ROJO, 46)
                 self._cerrar_ventana(e)
             else:
                 self._avisar("Mantén el pellizco sobre la X para cerrar la ventana")
@@ -864,10 +1101,18 @@ class Escena:
             else:
                 self._avisar("Mantén el pellizco sobre Salir para salir")
             return
-        if time.time() - m.t0 < TOQUE_SEG and math.dist(m.p0, (x, y)) < TOQUE_PX:
+        if m.boton:  # Reducir / Escritorio: un toque, aunque la mano se haya movido un poco
+            if _dentro(e.botones.get(m.boton), x, y):
+                self._onda(x, y, CIAN_FUERTE, 40)
+                self._al_tocar(e, x, y)
+            return
+        if rapido:
+            self._onda(x, y, CIAN_FUERTE, 46)
             self._al_tocar(e, x, y)
         elif e.tipo == "ventana" and self._en_zona_escritorio(x, y):
             self._llevar_al_escritorio(e)
+        elif e.tipo == "ventana" and not e.agarrado:
+            self._lanzar(e)
 
     def _soltar_todo(self):
         """Suelta pellizcos, arrastres y el botón del ratón real (tras un error)."""
@@ -892,9 +1137,11 @@ class Escena:
             vistas.add(clave)
             pts = np.array([(p.x * W, p.y * H) for p in lms], np.float32)
             m = self.manos.setdefault(clave, Mano())
+            dtm = ahora - m.visto
             m.puntos, m.visto = pts, ahora
             tam = max(1.0, float(np.linalg.norm(pts[0] - pts[9])))
             razon = float(np.linalg.norm(pts[4] - pts[8])) / tam
+            m.razon = razon
             # El cursor es el punto entre pulgar e índice: no brinca al pellizcar
             medio = (pts[4] + pts[8]) / 2
             cx = float(np.clip((medio[0] / W - MARGEN) / (1 - 2 * MARGEN), 0, 1)) * W
@@ -904,8 +1151,12 @@ class Escena:
             else:
                 vel = math.dist((cx, cy), (m.x, m.y))
                 a = min(0.85, 0.3 + vel / 90)  # suaviza el temblor sin retrasar los movimientos rápidos
+                px, py = m.x, m.y
                 m.x += (cx - m.x) * a
                 m.y += (cy - m.y) * a
+                if 0.005 < dtm < 0.3:
+                    m.vx += ((m.x - px) / dtm - m.vx) * 0.5
+                    m.vy += ((m.y - py) / dtm - m.vy) * 0.5
             if not m.pinza and razon < PINZA_ON:
                 self._presionar(clave, m.x, m.y)
             elif m.pinza and razon > PINZA_OFF:
@@ -935,33 +1186,137 @@ class Escena:
                 return
 
     # --- render ---
-    def _hover(self):
+    def _animar(self, dt, ahora):
         cursores = [(m.x, m.y) for m in self.manos.values() if m.x is not None]
+        sobre_zona = [m for m in self.manos.values()
+                      if m.pinza and m.modo == "mover" and m.elem is not None
+                      and m.elem.tipo == "ventana" and not m.boton and self._en_zona_escritorio(m.x, m.y)]
+        esperando = self.esperando if self.esperando and ahora < self.esperando[1] else None
         with self.lock:
             for e in self.elementos:
                 e.encima = bool(e.agarrado) or any(e.contiene(x, y) for x, y in cursores)
                 crece = e.encima and e.tipo != "ventana"
-                e.hover += ((1.0 if crece else 0.0) - e.hover) * 0.3
-                e.animar()
+                e.hover += ((1.0 if crece else 0.0) - e.hover) * _suave(dt, 12)
+                # Hundido mientras lo pellizcas sin arrastrarlo (botón que "se presiona")
+                e.presionado = e.tipo != "ventana" and any(
+                    m.pinza and m.elem is e and math.dist(m.p0, (m.x, m.y)) < TOQUE_PX
+                    for m in self.manos.values())
+                mano = next((m for m in sobre_zona if m.elem is e), None)
+                e.tencoger, e.pivote = (0.55, (mano.x, mano.y)) if mano else (1.0, e.pivote)
+                e.saltando = e.tipo == "app" and esperando is not None and esperando[0] is e.claves
+                if e.cerrando and ahora - e.cerrando > 3:  # no se cerró (p. ej. "¿guardar?")
+                    e.cerrando, e.talfa = 0.0, 1.0
+                e.animar(dt)
+            for e, _t in self.salientes:
+                e.animar(dt)
+            self.salientes = [(e, t) for e, t in self.salientes if ahora - t < 0.6 and e.alfa > 0.03]
+        arrastrando = any(m.pinza and m.modo == "mover" and m.elem is not None
+                          and m.elem.tipo == "ventana" and not m.boton for m in self.manos.values())
+        self.zona_a += ((1.0 if arrastrando else 0.0) - self.zona_a) * _suave(dt, 14)
+
+    def _pintar(self, c, e, ahora):
+        """Dibuja un elemento con su animación: sombra si está levantado; inclinado, balanceado
+        o encogido (deformado en perspectiva) si se mueve; semitransparente si aparece o se va.
+        Quieto, se dibuja directo: la deformación solo cuesta mientras hay movimiento."""
+        dibujar = {"ventana": self._dibujar_ventana, "app": self._dibujar_app}.get(
+            e.tipo, self._dibujar_accion)
+        x, y, w, h = e.rect()
+        if w < 4 or h < 4:
+            return
+        radio = 16 if e.tipo == "ventana" else (22 if e.tipo == "app" else h // 2)
+        esquinas = e.deformacion(x, y, w, h, ahora)
+        if e.alzado > 0.02:  # la sombra se aleja del panel cuanto más "alto" está
+            sx, sy, sw, sh = (x, y, w, h) if esquinas is None else cv2.boundingRect(esquinas)
+            dx = float(np.clip(-e.vx * 0.012, -22, 22))
+            dy = 5 + 15 * e.alzado + float(np.clip(-e.vy * 0.012, -10, 10))
+            _sombra(c, sx + dx, sy + dy, sw, sh, radio, 0.55 * e.alzado * e.alfa)
+        if esquinas is None and e.alfa >= 0.99:
+            dibujar(c, e)
+            self._borde_delantero(c, e, None, x, y, w, h, radio)
+            return
+        pad = int(14 + 0.22 * max(w, h))
+        rx0, ry0, rx1, ry1 = max(0, x - pad), max(0, y - pad), min(W, x + w + pad), min(H, y + h + pad)
+        if rx1 - rx0 < 4 or ry1 - ry0 < 4:
+            dibujar(c, e)
+            return
+        region = c[ry0:ry1, rx0:rx1]
+        fondo = region.copy()
+        dibujar(c, e)
+        alfa = min(1.0, max(0.0, e.alfa))
+        if esquinas is None:
+            cv2.addWeighted(region, alfa, fondo, 1 - alfa, 0, dst=region)
+            return
+        panel = region.copy()
+        region[:] = fondo
+        rw, rh = rx1 - rx0, ry1 - ry0
+        borde = 10  # incluye lo que se dibuja pegado por fuera (el pulso, el puntito del dock)
+        mascara = np.zeros((rh, rw), np.uint8)
+        _pegar_en(mascara, _mascara(w + 2 * borde, h + 2 * borde, radio + borde),
+                  x - borde - rx0, y - borde - ry0)
+        origen = np.float32([[x, y], [x + w, y], [x + w, y + h], [x, y + h]]) - np.float32([rx0, ry0])
+        M = cv2.getPerspectiveTransform(origen, esquinas - np.float32([rx0, ry0]))
+        plano = cv2.warpPerspective(panel, M, (rw, rh), flags=cv2.INTER_LINEAR,
+                                    borderMode=cv2.BORDER_REPLICATE)
+        mascara = cv2.warpPerspective(mascara, M, (rw, rh), flags=cv2.INTER_NEAREST)
+        if alfa < 0.99:
+            plano = cv2.addWeighted(plano, alfa, region, 1 - alfa, 0)
+        cv2.copyTo(plano, mascara, region)
+        self._borde_delantero(c, e, esquinas, x, y, w, h, radio)
+
+    @staticmethod
+    def _borde_delantero(c, e, esquinas, x, y, w, h, radio):
+        """El borde que va al frente del movimiento brilla: se ve hacia dónde va el panel."""
+        vel = math.hypot(e.vx, e.vy)
+        if vel < 350 or e.alfa < 0.5:
+            return
+        if esquinas is None:
+            esquinas = np.float32([[x, y], [x + w, y], [x + w, y + h], [x, y + h]])
+        normales = ((0, -1), (1, 0), (0, 1), (-1, 0))  # arriba, derecha, abajo, izquierda
+        i = max(range(4), key=lambda k: normales[k][0] * e.vx + normales[k][1] * e.vy)
+        a, b = esquinas[i], esquinas[(i + 1) % 4]
+        largo = float(np.linalg.norm(b - a))
+        if largo < 2 * radio + 4:
+            return
+        u = (b - a) / largo * radio
+        cv2.line(c, tuple(int(v) for v in a + u), tuple(int(v) for v in b - u), CIAN_FUERTE,
+                 2 if vel < 1200 else 3, cv2.LINE_AA)
+
+    def _dibujar_ondas(self, c, ahora):
+        vivas = []
+        for o in self.ondas:
+            x, y, t0, color, rmax = o
+            p = (ahora - t0) / 0.45
+            if p >= 1:
+                continue
+            vivas.append(o)
+            r = int(6 + rmax * (1 - (1 - p) ** 3))
+            x0, y0, x1, y1 = max(0, x - r - 4), max(0, y - r - 4), min(W, x + r + 5), min(H, y + r + 5)
+            if x1 - x0 < 2 or y1 - y0 < 2:
+                continue
+            roi = c[y0:y1, x0:x1]
+            capa = roi.copy()
+            cv2.circle(capa, (x - x0, y - y0), r, color, max(1, int(4 * (1 - p))), cv2.LINE_AA)
+            cv2.addWeighted(capa, 1 - p, roi, p, 0, dst=roi)
+        self.ondas = vivas
 
     def _dibujar_app(self, c, e):
         x, y, w, h = e.rect()
         brillo = e.encima or e.pulso > 0
-        _vidrio(c, x, y, w, h, radio=22, fuerza=0.38)
-        icono = e.icono if abs(e.escala * (1 + 0.05 * e.hover) - 1) < 0.03 else cv2.resize(
-            e.icono, (max(8, int(60 * e.escala)),) * 2)
-        _pegar(c, icono, x + (w - icono.shape[1]) / 2, y + 6)
+        _vidrio(c, x, y, w, h, radio=22, tinte=(90, 60, 30) if brillo else (60, 40, 25),
+                fuerza=0.38 + 0.12 * e.hover)
+        k = e.escala * (1 + e.lupa * e.hover)
+        icono = e.icono if abs(k - 1) < 0.03 else cv2.resize(e.icono, (max(8, int(60 * k)),) * 2)
+        _pegar(c, icono, x + (w - icono.shape[1]) / 2, y + 6 * k)
         t = _texto(e.titulo, 14, (255, 255, 255), True)
         _pegar(c, t, e.cx - t.shape[1] / 2, y + h - t.shape[0] - 2)
-        abierta = any(_coincide(v.hwnd, e.claves) for v in self._ventanas())
-        if abierta:  # puntito de "app abierta", como en el dock de macOS
+        if e.abierta:  # puntito de "app abierta", como en el dock de macOS
             cv2.circle(c, (int(e.cx), y + h + 7), 3, BLANCO, -1, cv2.LINE_AA)
         _borde(c, x, y, w, h, 22, CIAN_FUERTE if brillo else (200, 190, 170), 2 if brillo else 1)
 
     def _dibujar_accion(self, c, e):
         x, y, w, h = e.rect()
         brillo = e.encima or e.pulso > 0
-        _vidrio(c, x, y, w, h, radio=h // 2, tinte=(40, 40, 110), fuerza=0.5)
+        _vidrio(c, x, y, w, h, radio=h // 2, tinte=(40, 40, 150) if brillo else (40, 40, 110), fuerza=0.5)
         t = _texto(e.titulo, 18, (255, 255, 255), True)
         _pegar(c, t, e.cx - t.shape[1] / 2, e.cy - t.shape[0] / 2)
         _borde(c, x, y, w, h, h // 2, ROJO if brillo else (200, 190, 170), 2 if brillo else 1)
@@ -990,8 +1345,10 @@ class Escena:
                 r = (derecha - bw, y + 4, bw, barra - 8)
                 _vidrio(c, *r, radio=(barra - 8) // 2, tinte=(120, 80, 20), fuerza=0.6)
                 _pegar(c, t, r[0] + 9, r[1] + (r[3] - t.shape[0]) / 2)
-            if any(_dentro(r, cx, cy) for cx, cy in cursores):
-                _borde(c, *r, r[3] // 2, CIAN_FUERTE, 1)
+            if any(m.pinza and m.elem is e and m.boton == nombre for m in self.manos.values()):
+                _borde(c, *r, r[3] // 2, BLANCO, 3)       # presionado
+            elif any(_dentro(r, cx, cy) for cx, cy in cursores):
+                _borde(c, *r, r[3] // 2, CIAN_FUERTE, 2)
             e.botones[nombre] = r
             derecha = r[0] - 6
         # Ancho en escalones de 32 px: mientras el panel crece o lo escalas con las manos, el ancho
@@ -1031,9 +1388,9 @@ class Escena:
         if e.pulso > 0:
             _borde(c, x - 4, y - 4, w + 8, h + 8, 20, CIAN_FUERTE, 2)
 
-    def _dibujar_manos(self, c):
+    def _dibujar_manos(self, c, ahora):
         for m in self.manos.values():
-            if m.puntos is not None and time.time() - m.visto < 0.3:
+            if m.puntos is not None and ahora - m.visto < 0.3:
                 for a, b in CONEXIONES_MANO:
                     cv2.line(c, tuple(m.puntos[a].astype(int)), tuple(m.puntos[b].astype(int)),
                              (230, 200, 120), 1, cv2.LINE_AA)
@@ -1046,15 +1403,33 @@ class Escena:
             elif m.pinza:
                 cv2.circle(c, p, 12, CIAN_FUERTE, -1, cv2.LINE_AA)
                 cv2.circle(c, p, 18, BLANCO, 2, cv2.LINE_AA)
-                if m.modo == "contenido" and not m.desplazando:  # cargando el "mantener"
-                    avance = min(1.0, (time.time() - m.t0) / ESPERA_ARRASTRE)
+                if m.desplazando and abs(m.vy) > 60:  # flechas hacia donde va el scroll
+                    sg = 1 if m.vy > 0 else -1
+                    for k in (0, 1):
+                        yy = p[1] + sg * (28 + k * 9)
+                        cv2.polylines(c, [np.int32([[p[0] - 8, yy - sg * 6], [p[0], yy], [p[0] + 8, yy - sg * 6]])],
+                                      False, CIAN_FUERTE, 2, cv2.LINE_AA)
+                elif m.modo == "contenido" and not m.desplazando:  # cargando el "mantener"
+                    avance = min(1.0, (ahora - m.t0) / ESPERA_ARRASTRE)
                     cv2.ellipse(c, p, (24, 24), -90, 0, int(360 * avance), NARANJA, 3, cv2.LINE_AA)
                 elif m.elem is not None and (m.elem.tipo == "accion" or m.boton == "Cerrar"):  # cargando Salir / X
-                    avance = min(1.0, (time.time() - m.t0) / MANTENER_SALIR)
+                    avance = min(1.0, (ahora - m.t0) / MANTENER_SALIR)
                     cv2.ellipse(c, p, (24, 24), -90, 0, int(360 * avance), ROJO, 3, cv2.LINE_AA)
             else:
-                cv2.circle(c, p, 15, CIAN, 2, cv2.LINE_AA)
-                cv2.circle(c, p, 3, BLANCO, -1, cv2.LINE_AA)
+                # El anillo se va cerrando mientras juntas los dedos: ves venir el pellizco, y
+                # se ilumina sobre algo que se puede tocar
+                prog = float(np.clip((0.75 - m.razon) / (0.75 - PINZA_ON), 0, 1))
+                sobre = self._bajo(m.x, m.y) is not None
+                cv2.circle(c, p, int(18 - 7 * prog), CIAN_FUERTE if sobre else CIAN, 3 if sobre else 2,
+                           cv2.LINE_AA)
+                cv2.circle(c, p, 3 + int(3 * prog), BLANCO, -1, cv2.LINE_AA)
+        # Dos manos escalando una ventana: la línea entre ellas y el tamaño
+        dos = [m for m in self.manos.values() if m.pinza and m.d0 and m.esc0 and m.elem is not None]
+        if len(dos) >= 2 and dos[0].elem is dos[1].elem:
+            a, b = dos[0], dos[1]
+            cv2.line(c, (int(a.x), int(a.y)), (int(b.x), int(b.y)), CIAN_FUERTE, 1, cv2.LINE_AA)
+            t = _texto(f"{100 * a.elem.tescala / a.esc0:.0f} %", 16, (255, 255, 255), True)
+            _pegar(c, t, (a.x + b.x) / 2 - t.shape[1] / 2, (a.y + b.y) / 2 - 30)
 
     def _dibujar_interfaz(self, c, ahora):
         _pegar(c, _texto("JARVIS", 26, (120, 220, 255), True), 26, 18)
@@ -1063,33 +1438,36 @@ class Escena:
                  if any(e.interactiva for e in self._ventanas())
                  else "Toca una ventana o un icono para abrirlo · pellizca y mueve para acomodar")
         _pegar(c, _texto(ayuda, 15, (230, 230, 230)), 210, 25)
-        arrastrando = [m for m in self.manos.values()
-                       if m.pinza and m.modo == "mover" and m.elem is not None and m.elem.tipo == "ventana"]
-        if arrastrando:
+        if self.zona_a > 0.02:  # "Llevar al escritorio" baja desde arriba al arrastrar una ventana
             zx, zy, zw, zh = self._zona_escritorio()
-            encima = any(self._en_zona_escritorio(m.x, m.y) for m in arrastrando)
-            _vidrio(c, zx, zy, zw, zh, radio=zh // 2, tinte=(140, 90, 20) if encima else (60, 40, 25), fuerza=0.55)
-            _borde(c, zx, zy, zw, zh, zh // 2, CIAN_FUERTE, 2 if encima else 1)
+            encima = any(m.pinza and m.modo == "mover" and m.elem is not None and m.elem.tipo == "ventana"
+                         and self._en_zona_escritorio(m.x, m.y) for m in self.manos.values())
+            k = 1.1 + 0.03 * math.sin(ahora * 9) if encima else 1.0
+            zy = zy - (1 - self.zona_a) * 70
+            zx, zw, zh2 = W / 2 - zw * k / 2, zw * k, zh * k
+            _vidrio(c, zx, zy, zw, zh2, radio=int(zh2 // 2), tinte=(140, 90, 20) if encima else (60, 40, 25),
+                    fuerza=0.55)
+            _borde(c, zx, zy, zw, zh2, int(zh2 // 2), CIAN_FUERTE, 3 if encima else 1)
             t = _texto("Soltar aquí: llevar al escritorio", 17, (255, 255, 255), True)
-            _pegar(c, t, W / 2 - t.shape[1] / 2, zy + (zh - t.shape[0]) / 2)
+            _pegar(c, t, W / 2 - t.shape[1] / 2, zy + (zh2 - t.shape[0]) / 2)
         if self.aviso and ahora < self.t_aviso:
+            # entra deslizándose y se va subiendo
+            a = max(0.0, min(1.0, (ahora - self.t_aviso0) / 0.18, (self.t_aviso - ahora) / 0.25))
+            yy = 76 - (1 - a) * 26
             t = _texto(self.aviso, 18, (255, 255, 255), True)
-            _vidrio(c, W / 2 - t.shape[1] / 2 - 18, 76, t.shape[1] + 36, 40, radio=20, fuerza=0.5)
-            _pegar(c, t, W / 2 - t.shape[1] / 2, 76 + (40 - t.shape[0]) / 2)
+            _vidrio(c, W / 2 - t.shape[1] / 2 - 18, yy, t.shape[1] + 36, 40, radio=20, fuerza=0.5)
+            _pegar(c, t, W / 2 - t.shape[1] / 2, yy + (40 - t.shape[0]) / 2, alfa=0.3 + 0.7 * a)
 
-    def _dibujar(self, c, ahora):
-        self._hover()
+    def _dibujar(self, c, ahora, dt=1 / 30):
+        self._animar(dt, ahora)
         with self.lock:
             lista = list(self.elementos)
-        for e in lista:
-            if e.tipo == "ventana":
-                self._dibujar_ventana(c, e)
-            elif e.tipo == "app":
-                self._dibujar_app(c, e)
-            else:
-                self._dibujar_accion(c, e)
+            salientes = [e for e, _t in self.salientes]
+        for e in salientes + lista:
+            self._pintar(c, e, ahora)
         self._dibujar_interfaz(c, ahora)
-        self._dibujar_manos(c)
+        self._dibujar_ondas(c, ahora)
+        self._dibujar_manos(c, ahora)
 
     # --- ventana de la capa ---
     def _preparar_capa(self):
@@ -1159,7 +1537,8 @@ class Escena:
                 min_hand_detection_confidence=0.55, min_tracking_confidence=0.5)
             detector = mpv.HandLandmarker.create_from_options(opciones)
             self._armar()
-            threading.Thread(target=self._hilo_ventanas, daemon=True, name="realidad-ventanas").start()
+            self.hilo_v = threading.Thread(target=self._hilo_ventanas, daemon=True, name="realidad-ventanas")
+            self.hilo_v.start()
             camara.EXTERNO = lambda: self.crudo
 
             cv2.namedWindow(TITULO, cv2.WINDOW_NORMAL)
@@ -1168,31 +1547,41 @@ class Escena:
             t_inicio, t_fps, cuadros, capa, t_encima, ts = time.time(), time.time(), 0, None, 0.0, 0
             fallos = 0
             ultimo_ts = 0.0
+            fondo, t_prev = None, time.time()
             while not self.parar.is_set():
                 cuadro, ts_cuadro = lector.ultimo(indice)
-                if cuadro is None or ts_cuadro == ultimo_ts:
-                    time.sleep(0.005)
-                    continue
-                ultimo_ts = ts_cuadro
-                self.crudo = cuadro
-                espejo = cv2.flip(cuadro, 1)
-                ch, cw = espejo.shape[:2]
-                alto16 = int(cw * 9 / 16)
-                if alto16 < ch:  # recorta a 16:9 por el centro
-                    espejo = espejo[(ch - alto16) // 2:(ch - alto16) // 2 + alto16]
-                chico = cv2.resize(espejo, (640, 360))
+                nuevo = cuadro is not None and ts_cuadro != ultimo_ts
                 ahora = time.time()
-                imagen = mp.Image(image_format=mp.ImageFormat.SRGB,
-                                  data=cv2.cvtColor(chico, cv2.COLOR_BGR2RGB))
-                ts = max(ts + 1, int((ahora - t_inicio) * 1000))
-                detector.detect_async(imagen, ts)
-                c = cv2.resize(espejo, (W, H), interpolation=cv2.INTER_LINEAR)
+                # Se dibuja con cada cuadro de la cámara y, si la cámara va lenta (poca luz: a
+                # veces 1-15 fps), igual cada 1/30 s sobre el último fondo: antes la interfaz
+                # entera (ventanas en vivo, animaciones) iba a los fps de la cámara
+                if not nuevo and (fondo is None or ahora - t_prev < 1 / 30):
+                    time.sleep(0.004)
+                    continue
+                dt = min(1 / 15, max(1 / 240, ahora - t_prev))
+                t_prev = ahora
+                if nuevo:
+                    ultimo_ts = ts_cuadro
+                    self.crudo = cuadro
+                    espejo = cv2.flip(cuadro, 1)
+                    ch, cw = espejo.shape[:2]
+                    alto16 = int(cw * 9 / 16)
+                    if alto16 < ch:  # recorta a 16:9 por el centro
+                        espejo = espejo[(ch - alto16) // 2:(ch - alto16) // 2 + alto16]
+                    chico = cv2.resize(espejo, (640, 360))
+                    imagen = mp.Image(image_format=mp.ImageFormat.SRGB,
+                                      data=cv2.cvtColor(chico, cv2.COLOR_BGR2RGB))
+                    ts = max(ts + 1, int((ahora - t_inicio) * 1000))
+                    detector.detect_async(imagen, ts)
+                    fondo = cv2.resize(espejo, (W, H), interpolation=cv2.INTER_LINEAR)
+                c = fondo.copy()
                 try:
                     res = self._resultado
                     if res is not None and not res[1]:
                         res[1] = True
                         self._procesar_manos(res[0], ahora)
-                    self._dibujar(c, ahora)
+                    self._seguir_inercia(dt)
+                    self._dibujar(c, ahora, dt)
                     fallos = 0
                 except Exception:
                     # Un cuadro con error (p. ej. la ventana que usabas se cerró a medio gesto)
@@ -1237,9 +1626,11 @@ class Escena:
             for m in self.manos.values():
                 if m.raton_abajo:
                     _boton_izq(False)
+            if self.hilo_v is not None:
+                self.hilo_v.join(timeout=2)  # que no cree una captura nueva tras cerrarlas
             for e in self._ventanas():
                 if e.captura:
-                    e.captura.detener()
+                    e.captura.cerrar()
             try:
                 cv2.destroyWindow(TITULO)
                 cv2.waitKey(1)

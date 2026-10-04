@@ -898,5 +898,157 @@ class Avatares(unittest.TestCase):
         self.assertAlmostEqual(centro, 60, delta=6)
 
 
+class RealidadAumentada(unittest.TestCase):
+    """La física y los gestos del modo realidad aumentada, sin cámara ni ventanas reales."""
+
+    def setUp(self):
+        import realidad
+        self.R = realidad
+        self.ruedas = []
+        self._orig = (realidad._cursor, realidad._boton_izq, realidad._rueda)
+        realidad._cursor = lambda x, y: None
+        realidad._boton_izq = lambda abajo: None
+        realidad._rueda = self.ruedas.append
+        self.esc = realidad.Escena({})
+        self.esc._armar()
+
+    def tearDown(self):
+        self.R._cursor, self.R._boton_izq, self.R._rueda = self._orig
+
+    def _ventana(self):
+        e = self.R.Elemento("ventana", "Prueba", 640, 360, 300, 210, self.R._icono(None, 22, "P"), hwnd=1)
+        self.esc.elementos.insert(0, e)
+        return e
+
+    def _mano(self, x, y):
+        m = self.esc.manos.setdefault("Right", self.R.Mano())
+        m.x, m.y, m.visto = x, y, time.time() + 999
+        return m
+
+    def _correr(self, n, dt=1 / 30):
+        for _ in range(n):
+            self.esc._animar(dt, time.time())
+
+    def test_resorte_llega_al_objetivo(self):
+        x, v = 0.0, 0.0
+        maximo = 0.0
+        for _ in range(60):
+            x, v = self.R._resorte(x, v, 100.0, 1 / 30, 230, 21)
+            maximo = max(maximo, x)
+        self.assertAlmostEqual(x, 100.0, delta=0.5)
+        self.assertLess(maximo, 115)  # rebota un poco, no se dispara
+        # un cuadro muy lento no lo vuelve inestable
+        x, v = self.R._resorte(0.0, 0.0, 100.0, 0.5, 230, 21)
+        self.assertLess(abs(x), 200)
+
+    def test_quieto_no_se_deforma(self):
+        e = self._ventana()
+        self._correr(40)
+        self.assertIsNone(e.deformacion(*e.rect(), time.time()))
+
+    def test_arrastrar_a_la_derecha_inclina_hacia_alla(self):
+        e = self._ventana()
+        self._correr(30)
+        x, y, w, h = e.rect()
+        m = self._mano(x + w / 2, y + 10)
+        self.esc._presionar("Right", m.x, m.y)
+        for _ in range(8):
+            m.x += 25
+            self.esc._mover("Right", m.x, m.y)
+            self._correr(1)
+        self.assertGreater(e.vx, 300)
+        q = e.deformacion(*e.rect(), time.time())
+        self.assertIsNotNone(q)
+        izq, der = q[3][1] - q[0][1], q[2][1] - q[1][1]
+        self.assertLess(der, izq)       # el borde de adelante (derecho) se va hacia atrás
+        self.assertGreater(e.giro, 0)   # y cuelga de la mano como péndulo
+        self.assertGreater(e.alzado, 0.5)
+
+    def test_soltar_en_movimiento_la_lanza_sin_sacarla_de_la_pantalla(self):
+        e = self._ventana()
+        self._correr(30)
+        x, y, w, h = e.rect()
+        m = self._mano(x + w / 2, y + 10)
+        self.esc._presionar("Right", m.x, m.y)
+        for _ in range(10):
+            m.x += 40
+            self.esc._mover("Right", m.x, m.y)
+            self._correr(1)
+        antes = e.cx
+        self.esc._soltar("Right", m.x, m.y)
+        self.assertGreater(e.tcx, antes)       # sigue hacia donde iba
+        self.assertLessEqual(e.tcx, self.R.W)  # pero no se sale
+        self._correr(60)
+        self.assertAlmostEqual(e.cx, e.tcx, delta=2)
+
+    def test_icono_del_dock_es_elastico(self):
+        app = next(a for a in self.esc.elementos if a.tipo == "app")
+        self._correr(60)
+        m = self._mano(app.cx, app.cy)
+        self.esc._presionar("Right", m.x, m.y)
+        m.y -= 200
+        self.esc._mover("Right", m.x, m.y)
+        self.assertAlmostEqual(app.tcy, app.casa[1] - 80, delta=1)  # se estira menos que la mano
+        self.esc._soltar("Right", m.x, m.y)
+        self.assertEqual((app.tcx, app.tcy), app.casa)
+
+    def test_boton_de_la_barra_no_arrastra_la_ventana(self):
+        e = self._ventana()
+        self._correr(30)
+        e.botones = {"Reducir": (600, 260, 60, 20)}
+        m = self._mano(620, 270)
+        self.esc._presionar("Right", 620, 270)
+        antes = (e.tcx, e.tcy)
+        self.esc._mover("Right", 700, 330)
+        self.assertEqual((e.tcx, e.tcy), antes)
+
+    def test_presionar_una_ventana_que_acaba_de_desaparecer(self):
+        e = self._ventana()
+        self._correr(30)
+        bajo = self.esc._bajo
+        self.esc._bajo = lambda x, y: e
+        self.esc.elementos.remove(e)   # el hilo de ventanas la quitó justo antes
+        self._mano(e.cx, e.cy)
+        self.esc._presionar("Right", e.cx, e.cy)  # antes: ValueError que cortaba el cuadro
+        self.esc._bajo = bajo
+
+    def test_scroll_rapido_sigue_solo_y_se_frena(self):
+        e = self._ventana()
+        e.interactiva, e.zona = True, (400, 200, 480, 300)
+        m = self._mano(640, 350)
+        self.esc._presionar("Right", 640, 350)
+        for _ in range(5):
+            m.y -= 25
+            self.esc._mover("Right", m.x, m.y)
+        m.vy = -800
+        self.esc._soltar("Right", m.x, m.y)
+        self.assertIsNotNone(self.esc.inercia)
+        n = len(self.ruedas)
+        for _ in range(90):
+            self.esc._seguir_inercia(1 / 30)
+        self.assertGreater(len(self.ruedas), n)
+        self.assertTrue(all(u < 0 for u in self.ruedas[n:]))   # misma dirección que la mano
+        self.assertIsNone(self.esc.inercia)                    # y se detuvo sola
+
+    def test_captura_cerrada_no_revive(self):
+        cap = self.R.Captura(0)
+        cap.cerrar()
+        cap.iniciar(rapida=True)   # p. ej. un reinicio que llegó tarde desde otro hilo
+        self.assertIsNone(cap._ctl)
+
+    def test_dibuja_un_cuadro_con_todo_animandose(self):
+        e = self._ventana()
+        e.captura = None
+        e.mini_pw = np.full((300, 520, 3), 90, np.uint8)
+        m = self._mano(e.cx, e.cy - 90)
+        self.esc._presionar("Right", m.x, m.y)
+        c = np.zeros((self.R.H, self.R.W, 3), np.uint8)
+        for _ in range(5):
+            m.x += 30
+            self.esc._mover("Right", m.x, m.y)
+            self.esc._dibujar(c, time.time(), 1 / 30)
+        self.assertGreater(int(c.max()), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

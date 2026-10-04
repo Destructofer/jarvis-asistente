@@ -319,6 +319,15 @@ flotan tus ventanas abiertas **en vivo** y los iconos de YouTube, Spotify y Stea
 - Barra de título: arrastrar mueve el panel; Reducir, Escritorio y X (la X y Salir hay que mantenerlas).
 - Para escribir, díselo a Jarvis ("escribe lofi hip hop"). Salir: botón Salir, decirlo o mantener Esc.
 
+Todo reacciona a la mano: el anillo del cursor se cierra mientras juntas los dedos y se ilumina
+sobre lo que se puede tocar; cada toque deja una onda. Al agarrar un panel se levanta (sombra); al
+arrastrarlo se inclina hacia donde va, se balancea como colgado de la mano y su borde de adelante
+brilla; si lo sueltas en movimiento sigue un poco y se acomoda con un rebote (sin salirse de la
+pantalla). Sobre "Llevar al escritorio" la ventana se encoge hacia tu mano. Los iconos del dock
+son elásticos (se estiran hacia la mano y regresan) y rebotan mientras su app abre. Un scroll
+rápido sigue solo y se frena, como en el celular. Las ventanas aparecen creciendo y al cerrarse
+se desvanecen. Si la cámara va lenta (poca luz), la interfaz sigue a 30 fps igual.
+
 Usa el mismo lector de cámara que los gestos y la presencia, y mientras está activo **los gestos
 ✋👋🤟 se pausan** (las manos son de la realidad aumentada). En `realidad.py`; las ventanas en
 vivo usan Windows Graphics Capture (`windows-capture`).
