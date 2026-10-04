@@ -283,6 +283,53 @@ def mantener_caliente():
         pass
 
 
+def _edge_trozos(frase):
+    """Voz de Edge EN STREAMING: va entregando PCM (int16, TASA) conforme llega el MP3, en vez
+    de esperar la frase completa. El primer audio suena ~0.2-0.4 s antes (más en frases largas)."""
+    import asyncio
+
+    import av
+    import edge_tts
+    voz = _CONF.get("edge_voz", "es-MX-JorgeNeural")
+    llegadas = queue.Queue()
+
+    async def generar():
+        com = edge_tts.Communicate(frase, voz, rate=_CONF.get("edge_velocidad", "+5%"),
+                                   pitch=_CONF.get("edge_tono", "+0Hz"),
+                                   connect_timeout=6, receive_timeout=20)
+        async for trozo in com.stream():
+            if trozo["type"] == "audio":
+                llegadas.put(trozo["data"])
+
+    def correr():
+        try:
+            asyncio.run(generar())
+            llegadas.put(None)
+        except Exception as e:  # se reenvía al consumidor: decide si probar otro motor
+            llegadas.put(e)
+
+    threading.Thread(target=correr, daemon=True, name="edge-stream").start()
+    codec = av.CodecContext.create("mp3", "r")
+    remuestreo = av.AudioResampler(format="s16", layout="mono", rate=TASA)
+    while True:
+        datos = llegadas.get(timeout=25)
+        if datos is None:
+            break
+        if isinstance(datos, Exception):
+            raise datos
+        for paquete in codec.parse(datos):
+            for cuadro in codec.decode(paquete):
+                for f in remuestreo.resample(cuadro):
+                    pcm = f.to_ndarray().reshape(-1).astype(np.int16)
+                    if len(pcm):
+                        yield pcm
+    for cuadro in codec.decode(None):  # lo que quedó en el decodificador
+        for f in remuestreo.resample(cuadro):
+            pcm = f.to_ndarray().reshape(-1).astype(np.int16)
+            if len(pcm):
+                yield pcm
+
+
 def _edge_pcm(frase):
     import asyncio
 
@@ -489,15 +536,17 @@ def _generar(clip, voz_natural, guardar=False, forzado=None):
             dio_audio = False
             clip.motor = motor
             try:
-                if motor == "elevenlabs":
+                if motor in ("elevenlabs", "edge"):  # los dos en streaming
                     partes = []
-                    for trozo in _eleven_trozos(clip.frase, voz_natural,
-                                                os.environ.get("ELEVENLABS_API_KEY", "")):
+                    trozos = (_eleven_trozos(clip.frase, voz_natural,
+                                             os.environ.get("ELEVENLABS_API_KEY", ""))
+                              if motor == "elevenlabs" else _edge_trozos(clip.frase))
+                    for trozo in trozos:
                         dio_audio = True
                         partes.append(trozo)
                         clip.poner(trozo)
                     if not partes:
-                        raise RuntimeError("ElevenLabs no devolvió audio")
+                        raise RuntimeError(f"{motor} no devolvió audio")
                     pcm = np.concatenate(partes)
                 else:
                     pcm = {"edge": _edge_pcm, "piper": _piper_pcm, "windows": _sapi_pcm}[motor](clip.frase)

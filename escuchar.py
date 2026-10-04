@@ -302,6 +302,75 @@ class Microfono:
 MIC = Microfono()
 
 
+# ---------- ¿Está sonando algo en la computadora? ----------
+# Con un video o música sonando, el micrófono oye a otras personas hablando. Sin esto, Jarvis
+# se activaba con palabras del video que "se parecían" a su nombre y luego, en el modo
+# conversación, le contestaba al video durante minutos. Windows dice cuánto sonido sale por las
+# bocinas (el medidor del mezclador de volumen): se guarda cada 0.1 s, sin contar la voz del
+# propio Jarvis, y se consulta para el intervalo exacto en que se grabó cada frase.
+SALIDA = deque(maxlen=1200)   # (momento, pico 0-1) de los últimos ~2 minutos
+UMBRAL_SALIDA = 0.03          # pico de salida a partir del cual "algo está sonando"
+
+
+def _medir_salida():
+    # Lo PRIMERO del hilo: COM en modo MTA, antes de importar nada que use COM (si no, la
+    # importación deja el hilo en STA y ya no se puede cambiar). En MTA un objeto COM se puede
+    # liberar desde cualquier hilo; en STA, cuando el recolector de basura de Python lo
+    # liberaba desde OTRO hilo, Windows cerraba Jarvis de golpe (acceso inválido en _ctypes.pyd).
+    import ctypes
+    import sys
+    ctypes.windll.ole32.CoInitializeEx(None, 0)  # 0 = COINIT_MULTITHREADED
+    if "comtypes" not in sys.modules:  # al importarse por primera vez, comtypes inicializa COM
+        sys.coinit_flags = 0           # en el hilo que lo importa: que sea en el mismo modo
+    try:
+        from ctypes import POINTER, cast
+
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
+    except ImportError:
+        print("[Sin medidor de audio de la PC (pip install pycaw): no distingo un video de tu voz]")
+        return
+    vivos = []  # los objetos COM nunca se sueltan (son pocos): así nadie los libera a destiempo
+    medidor, id_salida, revisar = None, None, 0.0
+    while True:
+        ahora = time.time()
+        try:
+            if medidor is None:
+                dev = AudioUtilities.GetSpeakers()
+                interfaz = getattr(dev, "_dev", dev).Activate(IAudioMeterInformation._iid_,
+                                                               CLSCTX_ALL, None)
+                medidor = cast(interfaz, POINTER(IAudioMeterInformation))
+                vivos += [dev, interfaz, medidor]
+                id_salida, revisar = getattr(dev, "id", None), ahora + 60
+            pico = 0.0 if _jarvis_habla() else float(medidor.GetPeakValue())
+            SALIDA.append((ahora, pico))
+            # Si cambiaste de bocinas a audífonos, Windows cambia la salida predeterminada:
+            # cada minuto se revisa (y solo se vuelve a pedir el medidor si es otra)
+            if ahora > revisar:
+                revisar = ahora + 60
+                actual = AudioUtilities.GetSpeakers()
+                vivos.append(actual)
+                if getattr(actual, "id", None) != id_salida:
+                    medidor = None
+        except Exception:
+            medidor = None
+            time.sleep(2)
+        time.sleep(0.1)
+
+
+def pc_sonando(desde, hasta):
+    """Fracción (0-1) del intervalo en que sonaba algo en la PC (sin contar a Jarvis)."""
+    muestras = [p for t, p in list(SALIDA) if desde <= t <= hasta]
+    if not muestras:
+        return 0.0
+    return sum(p > UMBRAL_SALIDA for p in muestras) / len(muestras)
+
+
+def frase_de_la_pc(minimo=0.5):
+    """True si la última frase grabada coincidió con audio saliendo de la computadora."""
+    return pc_sonando(ULTIMA_ORDEN["inicio"], ULTIMA_ORDEN["fin"] or time.time()) >= minimo
+
+
 def iniciar(cfg):
     """Abre el micrófono según config.json: mic_dispositivo (principal), mic_respaldo
     ("auto" = el de Windows si el principal es otro; "" o "ninguno" = sin respaldo) y
@@ -321,6 +390,8 @@ def iniciar(cfg):
                 nombre_respaldo="" if resp_cfg in ("auto", "", "ninguno", None) else resp_cfg)
     print(f"[Micrófono: {_nombre_dispositivo(DISPOSITIVO)}"
           + (f"; respaldo: {_nombre_dispositivo(RESPALDO)}" if RESPALDO is not None else "") + "]")
+    if not any(h.name == "medidor-salida" for h in threading.enumerate()):
+        threading.Thread(target=_medir_salida, daemon=True, name="medidor-salida").start()
 
 
 # ---------- Umbral que sigue al ruido del cuarto ----------
@@ -553,27 +624,74 @@ def _preparar_cuda():
                 os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
 
 
+_lock_modelos = threading.Lock()
+_gpu = {"ok": None}  # None = sin probar; True/False = resultado (se prueba UNA vez por sesión)
+_lock_gpu = threading.Lock()  # la escucha y el precalentado preguntan a la vez: que esperen el resultado
+
+_PRUEBA_GPU = r"""
+import sys, numpy as np
+sys.path.insert(0, sys.argv[1])
+import escuchar
+escuchar._preparar_cuda()
+from faster_whisper import WhisperModel
+m = WhisperModel("tiny", device="cuda", compute_type="float16")
+list(m.transcribe(np.zeros(16000, np.float32), language="es", beam_size=1)[0])
+print("GPU_OK")
+"""
+
+
+def _gpu_sirve():
+    """¿Whisper puede usar la GPU NVIDIA? Se prueba en un PROCESO APARTE con límite de tiempo:
+    si faltan las DLL de CUDA (cublas64_12.dll), el primer intento lanza un error pero el
+    siguiente se queda colgado para siempre dentro de la librería nativa, y eso congelaba a
+    Jarvis completo al arrancar (no volvía a oír ninguna orden)."""
+    if _gpu["ok"] is not None:
+        return _gpu["ok"]
+    with _lock_gpu:
+        if _gpu["ok"] is None:
+            _gpu["ok"] = _probar_gpu()
+    return _gpu["ok"]
+
+
+def _probar_gpu():
+    ok = False
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() == 0:
+            return False
+        import subprocess
+        import sys
+        r = subprocess.run([sys.executable, "-c", _PRUEBA_GPU, str(Path(__file__).parent)],
+                           capture_output=True, text=True, timeout=90,
+                           creationflags=0x08000000)  # sin ventana de consola
+        ok = "GPU_OK" in (r.stdout or "")
+        if not ok:
+            error = (r.stderr or "").strip().splitlines()[-1:] or ["sin detalle"]
+            print(f"[Whisper no puede usar la GPU ({error[0][:110]}); uso la CPU. Para la GPU: "
+                  "pip install -r requirements-gpu.txt]")
+    except Exception as e:
+        print(f"[No pude probar la GPU para Whisper ({type(e).__name__}); uso la CPU]")
+    return ok
+
+
 def _cargar_modelo(nombre):
     if nombre in _modelos:
         return _modelos[nombre]
-    from faster_whisper import WhisperModel
-    preferencia = _cfg().get("whisper_dispositivo", "auto")
-    if preferencia in ("auto", "cuda"):
-        try:
-            _preparar_cuda()
-            import ctranslate2
-            if ctranslate2.get_cuda_device_count() > 0:
+    with _lock_modelos:  # el precalentado y la escucha no deben cargar el mismo modelo a la vez
+        if nombre in _modelos:
+            return _modelos[nombre]
+        from faster_whisper import WhisperModel
+        if _cfg().get("whisper_dispositivo", "auto") in ("auto", "cuda") and _gpu_sirve():
+            try:
+                _preparar_cuda()
                 print(f"[Cargando modelo de voz '{nombre}' en la GPU...]")
-                m = WhisperModel(nombre, device="cuda", compute_type="float16")
-                # prueba real: cuBLAS/cuDNN se cargan al transcribir, no al crear el modelo
-                list(m.transcribe(np.zeros(SAMPLE_RATE, np.float32), language="es", beam_size=1)[0])
-                _modelos[nombre] = m
-                return m
-        except Exception as e:
-            print(f"[Whisper no pudo usar la GPU ({type(e).__name__}: {str(e)[:100]}); uso la CPU]")
-    print(f"[Cargando modelo de voz '{nombre}'...]")
-    _modelos[nombre] = WhisperModel(nombre, device="cpu", compute_type="int8")
-    return _modelos[nombre]
+                _modelos[nombre] = WhisperModel(nombre, device="cuda", compute_type="float16")
+                return _modelos[nombre]
+            except Exception as e:
+                print(f"[Whisper no pudo usar la GPU ({type(e).__name__}: {str(e)[:100]}); uso la CPU]")
+        print(f"[Cargando modelo de voz '{nombre}'...]")
+        _modelos[nombre] = WhisperModel(nombre, device="cpu", compute_type="int8")
+        return _modelos[nombre]
 
 
 def _transcribir_local(audio, modelo, prompt):
@@ -591,6 +709,15 @@ def transcribir(audio, modelo="small", prompt=None, nube=False):
     el tiempo y no debe gastar la cuota."""
     t0 = time.time()
     modo = (_cfg().get("stt", {}) or {}).get("modo", "auto")
+    # Con la GPU, 'small' local transcribe una orden en ~0.25 s, sin red ni cuota: más rápido
+    # que ir a Groq (~0.5-1 s). En "auto" se usa primero; si falla, la nube de respaldo.
+    if nube and modo == "auto" and _gpu["ok"]:
+        try:
+            texto = _transcribir_local(audio, modelo, prompt)
+            ULTIMA_TRANSCRIPCION.update(seg=time.time() - t0, origen="local GPU")
+            return texto
+        except Exception as e:
+            print(f"[Whisper en la GPU falló ({type(e).__name__}); uso la nube]")
     if nube and modo in ("auto", "online"):
         texto = _transcribir_nube(audio, prompt)
         if texto is not None:
@@ -601,13 +728,27 @@ def transcribir(audio, modelo="small", prompt=None, nube=False):
     return texto
 
 
+def modelo_activacion(cfg):
+    """Modelo para reconocer "Jarvis". Con la GPU se usa el bueno ('small', ~0.25 s): esa misma
+    transcripción ya sirve como la orden y no hace falta transcribir dos veces. Sin GPU, el
+    ligero ('base'), porque escucha todo el tiempo en la CPU."""
+    if cfg.get("whisper_dispositivo", "auto") in ("auto", "cuda") and _gpu_sirve():
+        return cfg.get("whisper_modelo", "small")
+    return cfg.get("whisper_modelo_wake", "base")
+
+
 def precalentar(cfg):
     """Carga de antemano el Whisper local (en la GPU si se puede) para que el primer
     respaldo o la palabra de activación no tarden en arrancar."""
     try:
         if cfg.get("motor_activacion", "whisper") != "openwakeword":
-            _cargar_modelo(cfg.get("whisper_modelo_wake", "base"))
-        _cargar_modelo(cfg.get("whisper_modelo", "small"))
+            _cargar_modelo(modelo_activacion(cfg))
+        # Una transcripción de prueba por la MISMA ruta que una orden (con el filtro de voz, que
+        # carga su propio modelo): en la GPU, CUDA y el filtro se inicializan hasta la primera
+        # transcripción real, y eso le sumaba ~1.5 s a la primera orden del día
+        ruido = np.random.default_rng(0).normal(0, 0.01, SAMPLE_RATE * 2).astype(np.float32)
+        for modelo in {modelo_activacion(cfg), cfg.get("whisper_modelo", "small")}:
+            _transcribir_local(ruido, modelo, None)
     except Exception as e:
         print(f"[No pude precargar Whisper: {type(e).__name__}: {str(e)[:100]}]")
 
@@ -667,8 +808,17 @@ def esperar_palabra(palabras, modelo_wake="base", umbral=0.004, pista="Jarvis"):
             original = transcribir(audio, modelo_wake, prompt=pista)
             texto = _normalizar(original)
             span = _buscar_nombre(texto, palabras)
+            if span and not _exacto(texto, palabras) and frase_de_la_pc():
+                # "se parece" a Jarvis, pero lo dijo el video o la música que está sonando
+                print(f"[Ignoro «{original[:60]}»: sonó parecido a mi nombre, pero venía de la computadora]")
+                span = None
             if span:
-                return texto[span[1]:].strip(), audio
+                # Lo que dijo además del nombre, vaya antes o después ("Abre Chrome, Jarvis"):
+                # si no, con el nombre al final parecía que solo lo había llamado
+                despues = texto[span[1]:].strip()
+                resto = despues if len(despues) >= 4 else (texto[:span[0]] + " " + despues).strip()
+                resto = re.sub(r"^(?:hey|ey|oye|oiga|ok|okey|hola)\b\s*", "", resto)
+                return resto, audio, original
             if texto:
                 ESCUCHADO.append((time.time(), original))
     finally:
@@ -688,10 +838,16 @@ def _buscar_nombre(texto, palabras):
             return m.span()
     for m in re.finditer(r"\w+", texto):
         w = m.group()
-        if 5 <= len(w) <= 8 and any(SequenceMatcher(None, w, p).ratio() >= PARECIDO_NOMBRE
-                                    for p in palabras):
+        # Además de parecerse, tiene que SONAR a "jar-vis": una r seguida de v/b/f ("jarbis",
+        # "yaervis", "charvis"). Así palabras de un video como "servicio" o "Harvey" no cuentan.
+        if (5 <= len(w) <= 8 and re.search(r"r[vbf]", w)
+                and any(SequenceMatcher(None, w, p).ratio() >= PARECIDO_NOMBRE for p in palabras)):
             return m.span()
     return None
+
+
+def _exacto(texto, palabras):
+    return any(re.search(rf"\b{re.escape(p)}\b", texto) for p in palabras)
 
 
 # ---------- Palabra de activación con openWakeWord ("hey Jarvis") ----------
@@ -797,14 +953,75 @@ class Interruptor:
         if self.detector is None or self._activo.is_set():
             return
         self._activo.set()
+        self._interrumpido = threading.Event()
         self._hilo = threading.Thread(target=self._vigilar, daemon=True, name="interruptor")
         self._hilo.start()
+        # Con la GPU también se le puede cortar diciendo solo "Jarvis" (como se le llama
+        # siempre), no únicamente "Hey Jarvis": cada frase se transcribe en ~0.25 s
+        self._hilo_nombre = None
+        if _gpu["ok"]:
+            self._hilo_nombre = threading.Thread(target=self._vigilar_nombre, daemon=True,
+                                                 name="interruptor-nombre")
+            self._hilo_nombre.start()
 
     def detener(self):
         self._activo.clear()
-        if self._hilo is not None:
-            self._hilo.join(timeout=1.5)
-            self._hilo = None
+        for hilo in (self._hilo, getattr(self, "_hilo_nombre", None)):
+            if hilo is not None:
+                hilo.join(timeout=1.5)
+        self._hilo = self._hilo_nombre = None
+
+    def _vigilar_nombre(self):
+        """Mientras Jarvis habla: graba cada frase que suene fuerte y, si al transcribirla trae
+        el nombre ("Jarvis, ya", "Jarvis, mejor abre YouTube"), lo interrumpe. Su propia voz por
+        las bocinas también se transcribe, pero casi nunca dice su nombre."""
+        cfg = self.cfg
+        palabras = [_normalizar(p) for p in (cfg.get("palabras_activacion") or ["jarvis"])]
+        modelo = cfg.get("whisper_modelo", "small")
+        sub = MIC.suscribir()
+        try:
+            frames, voz_seg, silencio = [], 0.0, 0.0
+            while self._activo.is_set() and not self._interrumpido.is_set():
+                try:
+                    _t, data = sub.get(timeout=0.3)
+                except queue.Empty:
+                    continue
+                # umbral más alto que el normal: la voz de Jarvis por las bocinas también llega
+                fuerte = float(np.sqrt(np.mean(data ** 2))) > umbral_actual(
+                    float(cfg.get("mic_umbral", 0.004))) * 1.6
+                if fuerte:
+                    frames.append(data)
+                    voz_seg += SEG_BLOQUE
+                    silencio = 0.0
+                elif frames:
+                    frames.append(data)
+                    silencio += SEG_BLOQUE
+                if frames and (silencio >= 0.45 or voz_seg >= 6):
+                    audio = np.concatenate(frames).flatten()
+                    frames, voz_seg, silencio = [], 0.0, 0.0
+                    if len(audio) < SAMPLE_RATE * 0.5:
+                        continue
+                    try:
+                        texto = _transcribir_local(audio, modelo, None)
+                    except Exception:
+                        continue
+                    # Solo el nombre exacto: mientras Jarvis habla no se puede saber si un video
+                    # está sonando, y un parecido de la narración lo cortaría sin razón
+                    span = _exacto(_normalizar(texto), palabras)
+                    if not span or self._interrumpido.is_set() or not self._activo.is_set():
+                        continue
+                    self._interrumpido.set()
+                    print(f"[Me interrumpieron por nombre: «{texto}»]")
+                    self.al_interrumpir()
+                    orden = quitar_activacion(texto, cfg.get("palabras_activacion") or ["jarvis"])
+                    if len(_normalizar(orden)) < 3:  # solo "Jarvis": escucha lo que sigue
+                        audio = _grabar_de_sub(sub, float(cfg.get("mic_umbral", 0.004)),
+                                               SILENCIO_SEG, max_seg=15, espera_seg=5)
+                        orden = transcribir(audio, modelo, None, nube=True) if audio is not None else ""
+                    Interruptor.ORDENES.put(orden)
+                    return
+        finally:
+            MIC.desuscribir(sub)
 
     def _vigilar(self):
         cfg = self.cfg
@@ -813,7 +1030,7 @@ class Interruptor:
         self.detector.reset()
         sub = MIC.suscribir()
         try:
-            while self._activo.is_set():
+            while self._activo.is_set() and not self._interrumpido.is_set():
                 try:
                     _t, data = sub.get(timeout=0.3)
                 except queue.Empty:
@@ -821,6 +1038,9 @@ class Interruptor:
                 if not _detecta(self.detector, data, ganancia, sens):
                     continue
                 self.detector.reset()
+                if self._interrumpido.is_set():  # ya lo cortó el detector del nombre
+                    return
+                self._interrumpido.set()
                 print("[Me interrumpieron: me callo y escucho]")
                 self.al_interrumpir()
                 audio = _grabar_de_sub(sub, float(cfg.get("mic_umbral", 0.004)), SILENCIO_SEG,

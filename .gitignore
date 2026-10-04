@@ -13,6 +13,8 @@ config.json
 # Modelo de voz (63 MB): se comparte aparte, no por git. Ver voces/README.md
 voces/*.onnx
 voces/*.onnx.json
+*.onnx
+*.onnx.json
 
 # Modelos de MediaPipe (gestos y presencia): gestos.py los descarga solos la primera vez
 modelos/

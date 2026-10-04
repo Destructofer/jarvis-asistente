@@ -215,6 +215,37 @@ class Transcripcion(unittest.TestCase):
         self.assertEqual(genesis._despues_de_palabra("Oye, Jarvis, abre Chrome", p), "abre Chrome")
         self.assertEqual(genesis._despues_de_palabra("bla bla yarvis siguiente", p), "siguiente")
         self.assertEqual(genesis._despues_de_palabra("sin la palabra", p), "")
+        # el nombre al final: antes parecía que solo lo habían llamado
+        self.assertEqual(genesis._despues_de_palabra("Oye, abre Chrome, Jarvis", p), "abre Chrome")
+
+    def test_nombre_por_parecido(self):
+        p = ["jarvis", "yarvis"]
+        self.assertTrue(escuchar._buscar_nombre("yaervis abre spotify", p))
+        self.assertTrue(escuchar._buscar_nombre("jarbis pon musica", p))
+        self.assertIsNone(escuchar._buscar_nombre("travis scott es un rapero", p))
+        self.assertIsNone(escuchar._buscar_nombre("abre los archivos del jardin", p))
+
+    def test_umbral_sobre_el_ruido(self):
+        escuchar.NIVELES.clear()
+        escuchar.NIVELES.extend([0.02, 0.03, 0.04] * 50)  # ruido de un cuarto real
+        self.assertGreater(escuchar.umbral_actual(0.004), 0.04)
+        escuchar.NIVELES.clear()
+
+    def test_etiqueta_de_accion_nunca_se_dice(self):
+        class Loc:
+            texto = ""
+            def agregar(self, t): self.texto += t
+            def cerrar(self): pass
+        for pedazos in (["Listo, abrí Spotify. ", "[ACC", "ION: ejecu", "tando]"],
+                        ["Todo bien ", "[ACCI"], ["Cuesta [en dólares] 17. [ACCION: buscando]"]):
+            turno = genesis.Turno({"voz_activa": True})
+            loc = Loc()
+            turno._nueva = lambda loc=loc: loc
+            for p in pedazos:
+                turno.agregar(p)
+            turno.cerrar_ronda()
+            self.assertNotIn("ACC", loc.texto.upper())
+        self.assertIn("[en dólares]", loc.texto)  # los corchetes normales sí se dicen
 
 
 class Voz(unittest.TestCase):

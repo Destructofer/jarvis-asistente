@@ -777,7 +777,14 @@ def _despues_de_palabra(texto, palabras):
     if not alternativas:
         return ""
     m = re.search(rf"\b(?:{alternativas})\b[\W_]*", texto, re.I)
-    return texto[m.end():].strip() if m else ""
+    if not m:
+        return ""
+    despues = texto[m.end():].strip()
+    if len(despues) >= 4:
+        return despues
+    # "Abre Chrome, Jarvis": el nombre al final. La orden es lo que va antes (sin "oye", "hey")
+    antes = re.sub(r"^\W*(?:(?:hey|ey|oye|oiga|ok|okey|hola)\b\W*)?", "", texto[:m.start()], flags=re.I)
+    return antes.strip(" ,.;:!¡¿?") or despues
 
 
 # ---------- Modo conversación ----------
@@ -830,6 +837,11 @@ def _escuchar_seguimiento(cfg):
             continue  # ruido que no era voz: sigue escuchando lo que queda de la ventana
         alternativas = "|".join(re.escape(p) for p in _palabras(cfg) if p)
         dirigido = bool(alternativas and re.search(rf"\b(?:{alternativas})\b", skills._norm(texto)))
+        if not dirigido and escuchar.frase_de_la_pc():
+            # Lo que se oyó salió de las bocinas (un video, música, una llamada): no es para
+            # Jarvis. Sin esto le contestaba al video durante minutos.
+            print(f"[Ignoro «{texto[:60]}»: venía de la computadora, no de ti]")
+            continue
         sin_nombre = escuchar.quitar_activacion(texto, _palabras(cfg))
         if sin_nombre:
             return sin_nombre, dirigido
@@ -893,21 +905,25 @@ def obtener_entrada(cfg):
 
     print(f"Esperando... di '{_nombre(cfg)}' (Ctrl+C para salir)")
     hud.estado("inactivo")
-    r = esperar_palabra(_palabras(cfg), cfg.get("whisper_modelo_wake", "base"), umbral,
-                        _nombre(cfg))
+    modelo_wake = escuchar.modelo_activacion(cfg)
+    r = esperar_palabra(_palabras(cfg), modelo_wake, umbral, _nombre(cfg))
     if r is escuchar.A_CONVERSAR:
         return obtener_entrada(cfg)  # Jarvis preguntó algo por su cuenta: a escuchar la respuesta
     hud.estado("escuchando")
     if r is None:  # despertado desde la bandeja ("Escribir una orden"): directo a la ventana
         return _entrada_mixta(cfg, umbral)
-    resto, audio = r
+    resto, audio, original = r
     if len(resto) < 4:
         pitido(cfg)  # solo si dijo "Jarvis" a secas: si ya dijo la orden, el bip solo estorba
     if len(resto) >= 4:  # ya dijo la orden junto con la palabra
-        # El modelo "base" solo sirve para reconocer la palabra: la orden se vuelve a
-        # transcribir con el bueno (nube o 'small'), que entiende mucho mejor el español.
-        mejor = escuchar.transcribir(audio, cfg.get("whisper_modelo", "small"),
-                                     apps.vocabulario(), nube=True)
+        if modelo_wake == cfg.get("whisper_modelo", "small"):
+            # Ya se transcribió con el modelo bueno (GPU): esa misma transcripción es la orden
+            mejor = original
+        else:
+            # El modelo "base" solo sirve para reconocer la palabra: la orden se vuelve a
+            # transcribir con el bueno (nube o 'small'), que entiende mucho mejor el español.
+            mejor = escuchar.transcribir(audio, cfg.get("whisper_modelo", "small"),
+                                         apps.vocabulario(), nube=True)
         return (_despues_de_palabra(mejor, _palabras(cfg)) or resto), False
     print("Te escucho...")
     if cfg.get("ventana_entrada", False):

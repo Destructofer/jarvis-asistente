@@ -330,6 +330,19 @@ ventana son instantáneos. `python diagnostico.py latencia` lo mide sin sonar.
 Si el desglose dice `(edge)` o `(windows)`, ElevenLabs falló y usó el respaldo (más lento);
 si "modelo" pasa de 2 s, Groq está saturado (plan gratis) o la red está mal.
 
+**Con tarjeta NVIDIA** (`pip install -r requirements-gpu.txt`) Whisper corre en la GPU:
+`small` transcribe una orden en ~0.25 s (en la CPU ~2.8 s). Entonces la MISMA transcripción
+sirve para oír "Jarvis" y como la orden (no se transcribe dos veces ni se va a Groq) y se le
+puede cortar diciendo solo **"Jarvis, ya…"** mientras habla (sin GPU, solo con "Hey Jarvis").
+La GPU se prueba una vez al arrancar en un proceso aparte: si faltan las DLL de CUDA, sigue en
+la CPU (antes ese caso congelaba a Jarvis y no volvía a oír nada). Edge también habla en
+streaming: empieza con el primer pedazo de audio. Medido con Edge y GPU: **1.1-2.0 s** desde
+que terminas de hablar hasta su primera palabra.
+
+**Videos y música sonando:** Jarvis mide cuánto sonido sale por las bocinas (`pycaw`). Si una
+frase coincidió con audio de la computadora, no la toma como seguimiento de la conversación ni
+acepta un nombre que solo "se parece" a Jarvis: antes le contestaba al video durante minutos.
+
 ## Checklist del día
 
 | Antes de empezar | Listo |

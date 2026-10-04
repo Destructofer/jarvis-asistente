@@ -423,7 +423,10 @@ def _bucle():
             evento = detector.actualizar(ahora, gesto, score, puntos)
             if evento:
                 _cola.put(evento)
-        time.sleep(max(0.0, 1.0 / fps - (time.monotonic() - t_inicio)))
+        # Sin manos a la vista, 5 cuadros por segundo bastan para notar cuando aparece una (los
+        # gestos se sostienen ~0.5 s); a 15 fps todo el día se comía medio núcleo del procesador
+        efectivo = fps if (time.time() - ultima_mano) < 10 or _estado["raton"] else min(fps, 5.0)
+        time.sleep(max(0.0, 1.0 / efectivo - (time.monotonic() - t_inicio)))
     _estado["raton"] = False
 
 

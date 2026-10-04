@@ -636,13 +636,29 @@ def _dibujar_vault(c, est, color, lado):
     else:
         foto = cuadros[0][0]
     ancho, alto = _dims()
-    c.delete("all")
-    c.create_image(datos["x"], datos["y"], image=foto, anchor="nw")
     texto = f"{_cfg.get('name', 'Jarvis').upper()} · {TEXTOS.get(est, est)}"
-    # sombra: el texto no tiene recuadro detrás y debe leerse sobre cualquier fondo
-    cx = min(max(_centro_x(), 82), ancho - 82)  # el texto, debajo del muñeco (sin salirse del borde)
-    c.create_text(cx + 1, alto + 13, text=texto, fill="#000000", font=("Consolas", 9, "bold"))
-    c.create_text(cx, alto + 12, text=texto, fill=color, font=("Consolas", 9, "bold"))
+    # Los elementos del lienzo se crean UNA vez y solo se actualiza lo que cambió: borrar y
+    # recrear todo 25 veces por segundo (aunque fuera la misma imagen) era lo que más procesador
+    # gastaba Jarvis en reposo
+    items = _s.get("vb_items")
+    if not items or not c.find_withtag(items[0]):
+        c.delete("all")
+        cx = min(max(_centro_x(), 82), ancho - 82)  # el texto, debajo del muñeco
+        items = (c.create_image(datos["x"], datos["y"], image=foto, anchor="nw"),
+                 # sombra: el texto no tiene recuadro detrás y debe leerse sobre cualquier fondo
+                 c.create_text(cx + 1, alto + 13, text=texto, fill="#000000", font=("Consolas", 9, "bold")),
+                 c.create_text(cx, alto + 12, text=texto, fill=color, font=("Consolas", 9, "bold")))
+        _s["vb_items"], _s["vb_ultimo"] = items, (foto, datos["x"], datos["y"], texto, color)
+    else:
+        ultimo = _s.get("vb_ultimo") or (None,) * 5
+        if (foto, datos["x"], datos["y"]) != ultimo[:3]:
+            if (datos["x"], datos["y"]) != ultimo[1:3]:
+                c.coords(items[0], datos["x"], datos["y"])
+            c.itemconfigure(items[0], image=foto)
+        if (texto, color) != ultimo[3:]:
+            c.itemconfigure(items[1], text=texto)
+            c.itemconfigure(items[2], text=texto, fill=color)
+        _s["vb_ultimo"] = (foto, datos["x"], datos["y"], texto, color)
     return len(cuadros) > 1 or ahora < _vista["pausa_hasta"]
 
 
