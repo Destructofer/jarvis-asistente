@@ -1,0 +1,7 @@
+# Finales de línea LF en el repositorio aunque se edite en Windows (sin esto, un editor que
+# guarde con CRLF hace que el diff marque archivos enteros como cambiados)
+*.py text eol=lf
+*.pyw text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
