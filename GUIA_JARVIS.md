@@ -174,6 +174,34 @@ Jarvis no habla como asistente sino como un compañero más (`config.json → pe
   propondría...") y nunca inventa datos ni planes del equipo.
 - Nada de frases de asistente ("¿en qué más puedo ayudarte?"); te llama por tu nombre.
 
+## Cómo piensa Jarvis (`cognicion.py`)
+
+El modelo de lenguaje es solo el motor; la forma de pensar está en Jarvis y es igual en línea y
+sin internet. Todos los cerebros son de **pesos abiertos** (nada de ChatGPT ni Gemini):
+
+- **Cuánto pensar.** Una orden directa ("abre Spotify") va rápido. Lo que merece pensarse
+  (planear, decidir, comparar, explicar por qué, resolver, "¿qué me conviene?") se razona a
+  fondo: en la nube con razonamiento alto (~1 s más). Medido: con razonamiento bajo armó un
+  horario sin sentido; con alto, uno coherente.
+- **Cómo pensar.** Entiende qué necesitas de verdad, usa el contexto (la hora, la ventana que
+  tienes abierta, lo que sabe de ti), advierte antes de algo riesgoso, no dice que hizo algo
+  sin confirmarlo y te ofrece el siguiente paso cuando es claramente útil.
+- **Si algo falla, busca otra vía** (otra herramienta, otro nombre, preguntarte lo que falte)
+  en vez de solo decir el error.
+- **Calcula, no adivina.** Para cuentas usa `calcular` y para fechas `calendario` ("¿qué día
+  cae el 15?", "¿cuántos días faltan para Navidad?"). Sin ellas, ningún modelo atinaba el día
+  de la semana.
+- **Aprende de ti.** Cuando hablas de ti ("me encanta el café de olla", "estudio sistemas")
+  guarda el dato solo, en segundo plano, sin contraseñas, cuentas, teléfonos ni salud, y solo
+  de TUS palabras (nunca de documentos o pantallas). "¿Qué sabes de mí?" para verlo; "olvida
+  que..." para borrarlo. `config.json → cognicion.aprender: false` lo apaga.
+
+**Sin internet** (`modo: offline` o si se cae la red) todo sigue en la laptop: Whisper en la
+GPU, el cerebro y la visión con `qwen3.5:4b` (cabe entero en una GPU de 6 GB: ~0.6 s por orden,
+~2 s por foto) y la voz con Piper. Medido con las órdenes de prueba: 7/7 correctas. Razona
+menos fino que la nube en planes complejos (es un modelo chico); `model_profundo` permite usar
+uno más grande solo para pensar a fondo si tienes una GPU con más memoria.
+
 ## Jarvis te ve y entiende tus manos (estilo Iron Man)
 
 Usa la cámara de la laptop (`config.json → camara.usuario_indice`, normalmente 0). Lo que tiene

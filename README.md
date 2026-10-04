@@ -11,7 +11,8 @@
 > config.json), `tests/` (pruebas sin micrófono ni internet). También: `documentos.py`
 > (descomprimir, leer, resumir y guardar documentos), `entorno.py` (escanear el entorno y vigilar
 > con la cámara), `realidad.py` (modo realidad aumentada con las manos), `acciones.py` +
-> `vaultboy/` (el Vault Boy del HUD según la acción) y `descargas.py` (el HUD muestra las descargas).
+> `vaultboy/` (el Vault Boy del HUD según la acción) y `descargas.py` (el HUD muestra las descargas), y `cognicion.py`
+> (cuánto y cómo pensar, calcular y fechas exactas, aprender del usuario).
 
 # Genesis
 

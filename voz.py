@@ -437,6 +437,15 @@ def _motores(voz_natural, forzado=None):
         return lista
     ahora = time.time()
     vivos = [m for m in lista if _caidos.get(m, 0) < ahora]
+    if any(m in ("elevenlabs", "edge") for m in vivos):
+        # Sin internet, cada frase esperaba hasta 6 s a que Edge no conectara antes de pasar a
+        # Piper: se pregunta antes (respuesta guardada 30 s, no cuesta nada)
+        try:
+            import cerebro
+            if not cerebro.hay_internet("speech.platform.bing.com"):
+                vivos = [m for m in vivos if m not in ("elevenlabs", "edge")]
+        except Exception:
+            pass
     return vivos or ["windows"]
 
 

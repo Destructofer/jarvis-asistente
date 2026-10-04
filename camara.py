@@ -76,6 +76,10 @@ class _Lector:
         self.hilo = None
         self.error = ""
         self._parar = threading.Event()
+        # Gestos, presencia y la realidad aumentada piden la cámara a la vez desde sus hilos:
+        # sin candado, uno veía el hilo lector "no vivo" mientras el otro lo creaba, intentaba
+        # pararlo antes de que arrancara y el hilo de gestos moría ("cannot join thread")
+        self._lock = threading.Lock()
 
     def _bucle(self, indice):
         import cv2
@@ -102,16 +106,23 @@ class _Lector:
         self.ultimo_uso = time.time()
         if self.hilo is not None and self.hilo.is_alive() and self.indice == indice:
             return
-        self.parar()
-        self._parar.clear()
-        self.indice, self.error, self.cuadro = indice, "", None
-        self.hilo = threading.Thread(target=self._bucle, args=(indice,), daemon=True,
-                                     name="camara")
-        self.hilo.start()
+        with self._lock:
+            if self.hilo is not None and self.hilo.is_alive() and self.indice == indice:
+                return  # otro hilo lo acaba de arrancar
+            self._detener()
+            self._parar.clear()
+            self.indice, self.error, self.cuadro = indice, "", None
+            self.hilo = threading.Thread(target=self._bucle, args=(indice,), daemon=True,
+                                         name="camara")
+            self.hilo.start()
 
     def parar(self):
+        with self._lock:
+            self._detener()
+
+    def _detener(self):
         self._parar.set()
-        if self.hilo is not None:
+        if self.hilo is not None and self.hilo.ident is not None:  # solo si llegó a arrancar
             self.hilo.join(timeout=2)
 
     def ultimo(self, indice):

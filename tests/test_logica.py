@@ -744,5 +744,47 @@ class Microfono(unittest.TestCase):
         self.assertEqual(len(mic.reciente(5)), escuchar.BLOQUE)
 
 
+class Cognicion(unittest.TestCase):
+    """La parte pensante: cuánto pensar, calcular con exactitud y qué aprender del usuario."""
+
+    def test_nivel_de_pensamiento(self):
+        import cognicion
+        self.assertEqual(cognicion.nivel("abre spotify"), "rapido")
+        self.assertEqual(cognicion.nivel("sube el volumen a 60"), "rapido")
+        self.assertEqual(cognicion.nivel("¿cómo organizo mi día si tengo examen?"), "profundo")
+        self.assertEqual(cognicion.nivel("¿qué me conviene, la laptop o la tablet?"), "profundo")
+        self.assertEqual(cognicion.nivel("¿quién ganó el mundial pasado?"), "normal")
+
+    def test_calcular_exacto_y_seguro(self):
+        import cognicion
+        self.assertTrue(cognicion.calcular("200 - (3*45 + 2*12.50)").endswith("= 40"))
+        self.assertTrue(cognicion.calcular("1500 * 16%").endswith("= 240"))
+        self.assertIsInstance(cognicion.calcular("10/0"), skills.Fallo)
+        self.assertIsInstance(cognicion.calcular('__import__("os").system("dir")'), skills.Fallo)
+        self.assertIsInstance(cognicion.calcular("9**999"), skills.Fallo)
+
+    def test_calendario(self):
+        import cognicion
+        self.assertIn("jueves", cognicion.calendario("dia_de_la_semana", "2026-10-15"))
+        self.assertIn("82 días", cognicion.calendario("dias_entre", "2026-10-04", "2026-12-25"))
+        self.assertIn("miércoles 14 de octubre", cognicion.calendario("sumar_dias", "2026-10-04", dias=10))
+
+    def test_aprende_solo_lo_util_y_seguro(self):
+        import cognicion
+        import memoria
+        guardados = []
+        viejo = (memoria.listar_hechos, memoria.agregar_hecho)
+        memoria.listar_hechos = lambda: [{"texto": "Le gusta el rock"}]
+        memoria.agregar_hecho = guardados.append
+        try:
+            nuevos = cognicion._guardar(["Le gusta el rock.", "Su contraseña es hola123",
+                                         "Su tarjeta es 4152 3135 0000 1234", "Estudia ingeniería"])
+        finally:
+            memoria.listar_hechos, memoria.agregar_hecho = viejo
+        self.assertEqual(nuevos, ["Estudia ingeniería"])  # sin repetidos ni datos sensibles
+        self.assertTrue(cognicion.SOBRE_SI.search(skills._norm("me encanta el café de olla")))
+        self.assertFalse(cognicion.SOBRE_SI.search(skills._norm("abre spotify")))
+
+
 if __name__ == "__main__":
     unittest.main()

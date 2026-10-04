@@ -13,6 +13,7 @@ import acciones  # [ACCION: categoria] de cada respuesta y el Vault Boy del HUD
 import apps
 import archivos
 import cerebro
+import cognicion  # cuánto pensar, cómo pensar, aprender del usuario y contexto
 import conocimiento
 import control  # noqa: F401  (registra las skills de ventanas, teclas, clics y rutinas)
 import descargas  # el Vault Boy del HUD carga el costal mientras se baja algo
@@ -295,6 +296,14 @@ GRUPOS = [
      r"donde esta|encuentra|cuenta|cuantos|cuantas|lee esta|lee este|leer esta|hoja|pizarron|"
      r"etiqueta|identifica|que es esto|vigila|avisame si|avisame cuando|peligro|riesgo",
      ["mirar", "escanear_entorno", "vigilar_camara", "crear_documento"]),
+    # Pensar con exactitud (cognicion.py): cuentas y fechas se calculan, no se adivinan
+    (r"\d|cuanto|cuanta|calcula|suma|resta|multiplica|divide|porcentaje|por ciento|precio|cuesta|"
+     r"cambio|total|promedio|mitad|doble|triple",
+     ["calcular"]),
+    (r"fecha|que dia|cuantos dias|faltan|dentro de|semana|cumpleanos|calendario|lunes|martes|"
+     r"miercoles|jueves|viernes|sabado|domingo|enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
+     r"septiembre|octubre|noviembre|diciembre|mes que|proximo|pasado manana",
+     ["calendario"]),
     (r"realidad|aumentada|virtual|vision pro|holograma|hologra|modo ar|gafas|lentes virtuales|"
      r"entorno virtual|mixta|sal del modo",
      ["modo_realidad"]),
@@ -315,6 +324,8 @@ def elegir_herramientas(texto, history):
     if expositor.ACTIVO:  # en plena exposición, lo del público siempre a la mano
         nombres.update(["presentarse_al_publico", "hablar_al_publico", "pregunta_del_publico",
                         "mostrar_presentacion", "presentacion"])
+    if cognicion.nivel(texto) == "profundo":  # para pensar a fondo, con qué calcular
+        nombres.update(["calcular", "calendario"])
     if navegador is not None and navegador.activo():
         nombres.update(["ir_a_modulo", "explicar_pantalla", "resaltar", "recorrer_modulos",
                         "volver_atras"])
@@ -1139,17 +1150,23 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
     externo_visto = False
     _confirmacion["negada"] = False
     ULTIMAS_HERRAMIENTAS.clear()
+    reintento_hecho = False
     streaming = turno is not None and cfg.get("respuesta_streaming", True)
     for _ in range(8):
         if turno is not None and turno.interrumpido:
             raise Interrumpido()  # ni una vuelta más al modelo: ya hay una orden nueva
-        # Opinión/análisis: razona más y habla con más soltura; órdenes: rápido y preciso
-        profundo = pide_opinion(texto_usuario) and not uso_herramienta
-        temperatura = 0.7 if fallos_idioma else (0.55 if profundo else 0.2)
+        # Opinión, análisis, planear, decidir, explicar a fondo: razona más (cognicion.nivel);
+        # órdenes directas: rápido y preciso. Después de usar herramientas no hace falta.
+        opinion = pide_opinion(texto_usuario)
+        profundo = (opinion or cognicion.nivel(texto_usuario) == "profundo") and not uso_herramienta
+        temperatura = 0.7 if fallos_idioma else (0.55 if opinion and not uso_herramienta
+                                                 else 0.3 if profundo else 0.2)
+        esfuerzo = (cfg.get("razonamiento_opinion", "medium") if opinion
+                    else cognicion.esfuerzo("profundo", cfg)) if profundo else None
         try:
             r = cerebro.chat(cfg, history, skills.schemas(herramientas), temperatura,
                              al_texto=turno.agregar if streaming else None,
-                             razonamiento=cfg.get("razonamiento_opinion", "medium") if profundo else None)
+                             razonamiento=esfuerzo)
         finally:
             if turno is not None:
                 turno.cerrar_ronda()
@@ -1233,6 +1250,16 @@ def responder(cfg, history, varios_pasos=False, herramientas=None, turno=None, t
         # modelo no añadió nada por su cuenta, la decimos ya en vez de volver a preguntarle;
         # eso ahorra una vuelta entera al modelo (la mayor causa de la demora percibida).
         # No aplica si la orden tenía varios pasos: el modelo tiene que seguir.
+        fallo = [x for x in resultados if isinstance(x, skills.Fallo)
+                 and "no lo permit" not in x and "cancel" not in x]
+        if fallo and not reintento_hecho:
+            # Algo falló: en vez de solo decir el error, que piense otra vía una vez (otra
+            # herramienta, otro nombre, preguntar lo que falte). Como lo haría una persona.
+            reintento_hecho = True
+            history.append({"role": "user", "content": (
+                "[nota del sistema, no del usuario] Eso falló. Si hay otra forma razonable de "
+                "lograrlo, inténtala ahora; si no, explica en una frase qué pasó y qué propones.")})
+            continue
         if (not varios_pasos and not (r["content"] or "").strip()
                 and all(skills.es_terminal(c["name"]) for c in r["tool_calls"])):
             return _unir(resultados)
@@ -1267,6 +1294,12 @@ GUIAS = {
     "vigilar_camara": "Si pide que avises cuando pase algo frente a la cámara, usa vigilar_camara.",
     "modo_realidad": "Para el modo realidad aumentada (entorno virtual, holograma, como las gafas "
                      "de Apple) usa modo_realidad; para salir, activar=false.",
+    "calcular": "Si la respuesta depende de una cuenta, usa calcular; nunca la hagas de memoria.",
+    "recordatorio": "Si pide que le avises o le recuerdes algo en un tiempo o a una hora "
+                    "('recuérdame en 10 minutos...', 'avísame a las 5'), usa recordatorio o "
+                    "temporizador; recordar es solo para guardar un dato sobre él.",
+    "calendario": "Si la pregunta es de fechas (qué día cae, cuántos días faltan, qué fecha será), "
+                  "usa calendario; nunca lo calcules de memoria.",
 }
 
 
@@ -1281,7 +1314,7 @@ def _estado_vivo():
             "piden activar o abrir algo, usa la herramienta): " + "; ".join(partes) + ".")
 
 
-def _prompt(cfg, herramientas=None):
+def _prompt(cfg, herramientas=None, texto=""):
     en_exposicion = expositor.ACTIVO or _demo(cfg).get("activo")
     import datetime
     ahora = datetime.datetime.now()
@@ -1319,7 +1352,8 @@ def _prompt(cfg, herramientas=None):
     guias = [g for n, g in GUIAS.items() if herramientas is not None and n in herramientas]
     if guias:
         partes.append("\n\nCómo usar estas herramientas: " + " ".join(guias))
-    partes.append(_estado_vivo())
+    partes.append(cognicion.reglas(cognicion.nivel(texto) if texto else "normal"))
+    partes.append(_estado_vivo() + cognicion.contexto())
     partes.append(acciones.REGLA)
     return "".join(p for p in partes if p)
 
@@ -1577,7 +1611,7 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
         # turno anterior: se refresca el prompt
         hud.estado("pensando")
         herramientas = elegir_herramientas(user, history)
-        history[0]["content"] = _prompt(cfg, herramientas)
+        history[0]["content"] = _prompt(cfg, herramientas, user)
         _compactar(history)
         while _notas:  # lo que Jarvis dijo por su cuenta (p. ej. "¿te quedó alguna duda?")
             history.append(_notas.pop(0))
@@ -1646,6 +1680,8 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
             return
         memoria.guardar_mensaje("user", user)
         memoria.guardar_mensaje("assistant", acciones.separar(str(reply))[0])
+        if not seguimiento or not expositor.ACTIVO:  # frente al público, no aprende de otros
+            cognicion.aprender(cfg, user)
         _entregar(cfg, turno, reply)
     finally:
         turno.cerrar()

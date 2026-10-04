@@ -279,23 +279,65 @@ def _chat_nube(prov, history, tools, temperatura, al_texto=None):
     return {"content": "".join(contenido), "tool_calls": calls}
 
 
-def _chat_local(cfg, history, tools, temperatura, al_texto=None):
+_sin_think = set()  # modelos locales que no aceptan "think" (los viejos: qwen2.5, llama3.2)
+
+
+def _chat_local(cfg, history, tools, temperatura, al_texto=None, razonamiento=None):
     # num_ctx: Ollama usa por defecto una ventana de ~4k tokens y solo las ~40 herramientas
     # ocupan ~6k; sin esto recortaba en silencio las instrucciones y respondía a ciegas.
     opciones = {"temperature": temperatura, "num_ctx": cfg.get("ollama_ctx", 16384)}
-    kwargs = {"model": cfg["model"], "messages": _a_ollama(history), "tools": tools or None,
+    # Sin internet: el modelo rápido (cabe entero en la GPU, ~0.6 s) para órdenes y plática, y
+    # el más capaz solo para lo que merece pensarse (config.json → model_profundo)
+    modelo = cfg["model"]
+    if razonamiento in ("medium", "high") and cfg.get("model_profundo"):
+        modelo = cfg["model_profundo"]
+    kwargs = {"model": modelo, "messages": _a_ollama(history), "tools": tools or None,
               "options": opciones, "keep_alive": cfg.get("ollama_keep_alive", "30m")}
-    if al_texto is None:
-        msg = ollama.chat(**kwargs).message
-        partes, llamadas = [msg.content or ""], list(msg.tool_calls or [])
-    else:
-        partes, llamadas = [], []
-        for trozo in ollama.chat(stream=True, **kwargs):
-            m = trozo.message
-            if m.content:
-                partes.append(m.content)
+    # Los modelos locales nuevos (qwen3.5...) razonan SIEMPRE por defecto: para "abre Spotify"
+    # eso eran segundos de más. Solo piensan cuando la petición lo merece (cognicion.nivel).
+    if modelo not in _sin_think:
+        # Razonar en la laptop es lento (el 9B no cabe entero en la GPU: 30+ s): por defecto el
+        # "pensar más" sin internet es usar el modelo más capaz, sin razonamiento interno
+        # (config.json → cognicion.pensar_local: true para activarlo)
+        pensar = bool((cfg.get("cognicion") or {}).get("pensar_local", False))
+        kwargs["think"] = pensar and razonamiento in ("medium", "high")
+    limite = float((cfg.get("cognicion") or {}).get("limite_pensar_local_seg", 15))
+    try:
+        r = _ollama_chat(kwargs, al_texto, limite if kwargs.get("think") else None)
+    except Exception as e:
+        if "think" in kwargs and "think" in str(e).lower():
+            _sin_think.add(modelo)
+            kwargs.pop("think")
+            return _ollama_chat(kwargs, al_texto)
+        raise
+    if r is None:  # pensó demasiado sin llegar a nada (un modelo chico puede dar vueltas minutos)
+        print(f"[El modelo local pensó más de {limite:.0f} s sin responder; contesto sin razonar]")
+        kwargs["think"] = False
+        r = _ollama_chat(kwargs, al_texto)
+    return r
+
+
+def _ollama_chat(kwargs, al_texto, limite_pensar=None):
+    """Siempre en streaming (aunque nadie lo escuche): así se puede cortar un razonamiento que
+    se alarga. Devuelve None si pensó más de limite_pensar segundos sin escribir la respuesta."""
+    partes, llamadas, t0 = [], [], time.time()
+    flujo = ollama.chat(stream=True, **kwargs)
+    for trozo in flujo:
+        m = trozo.message
+        if m.content:
+            partes.append(m.content)
+            if al_texto is not None:
                 al_texto(m.content)
-            llamadas += list(m.tool_calls or [])
+        llamadas += list(m.tool_calls or [])
+        if (limite_pensar and not partes and not llamadas
+                and time.time() - t0 > limite_pensar):
+            try:
+                flujo.close()
+            except Exception:
+                pass
+            return None
+    if limite_pensar and not "".join(partes).strip() and not llamadas:
+        return None  # se le acabó el razonamiento sin respuesta: otra vez, sin pensar
     calls = [{"id": f"call_{uuid.uuid4().hex[:8]}", "name": c.function.name,
               "args": dict(c.function.arguments or {})} for c in llamadas]
     return {"content": "".join(partes), "tool_calls": calls}
@@ -402,7 +444,7 @@ def chat(cfg, history, tools, temperatura=0.2, al_texto=None, razonamiento=None)
                     return r
 
     try:
-        r = _chat_local(cfg, history, tools, temperatura, cb)
+        r = _chat_local(cfg, history, tools, temperatura, cb, razonamiento)
     except Exception as e:
         if estado["emitido"]:
             raise CorteEnVivo("Perdón, perdí el hilo. ¿Me lo repites?") from e

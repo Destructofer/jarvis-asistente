@@ -2,7 +2,7 @@
 
 Nube (por defecto Groq, formato OpenAI) si hay internet y clave, con respaldos en otras nubes
 gratis (config.json → vision.respaldos, p. ej. Google Gemini) cuando Groq llega a su límite;
-si nada responde, un modelo local de Ollama con visión (qwen2.5vl, gemma3...).
+si nada responde, un modelo local de Ollama con visión (qwen3.5, qwen2.5vl, gemma3...).
 """
 import base64
 import io
@@ -99,10 +99,17 @@ def _usar_nube(conf):
 def _local_varias(conf, sistema, instruccion, lista_b64):
     import ollama
 
-    r = ollama.chat(model=conf.get("local_modelo", "qwen2.5vl:7b"),
-                    messages=[{"role": "system", "content": sistema},
-                              {"role": "user", "content": instruccion, "images": lista_b64}],
-                    options={"temperature": 0.5})
+    kwargs = dict(model=conf.get("local_modelo", "qwen3.5:4b"),
+                  messages=[{"role": "system", "content": sistema},
+                            {"role": "user", "content": instruccion, "images": lista_b64}],
+                  options={"temperature": 0.5}, keep_alive="30m")
+    # Los modelos nuevos (qwen3.5) razonan por defecto: para describir una foto eran ~60 s
+    try:
+        r = ollama.chat(think=False, **kwargs)
+    except Exception as e:
+        if "think" not in str(e).lower():
+            raise
+        r = ollama.chat(**kwargs)  # modelo viejo que no acepta "think"
     return r.message.content or ""
 
 
@@ -117,7 +124,7 @@ def _ver(conf, sistema, instruccion, lista_b64):
     except Exception as e:
         raise RuntimeError("No pude usar ningún modelo de visión. Revisa la clave de Groq (o la "
                            "de Gemini) o descarga uno local con 'ollama pull "
-                           f"{conf.get('local_modelo', 'qwen2.5vl:7b')}'.") from e
+                           f"{conf.get('local_modelo', 'qwen3.5:4b')}'.") from e
 
 
 def ver(cfg, img, instruccion, sistema, max_tokens=None, lado=None, reglas=REGLAS_PERSONAS):
