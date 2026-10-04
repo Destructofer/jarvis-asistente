@@ -327,8 +327,9 @@ def captura_pantalla():
 @skill("buscar_web", "Busca algo en internet abriendo el navegador con los resultados.",
        {"consulta": {"type": "string", "description": "Texto a buscar"}})
 def buscar_web(consulta):
-    webbrowser.open(f"https://www.google.com/search?q={quote_plus(consulta)}")
-    return f"Buscando '{consulta}' en el navegador."
+    import preferencias  # tu navegador y tu buscador, si los elegiste
+    nav = preferencias.abrir_url(preferencias.url_busqueda(consulta))
+    return f"Buscando '{consulta}'" + (f" en {nav}." if nav else " en el navegador.")
 
 
 @skill("abrir_web", "Abre un sitio web en el navegador a partir de su dirección.",
@@ -337,8 +338,9 @@ def buscar_web(consulta):
 def abrir_web(url):
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    webbrowser.open(url)
-    return f"Abriendo {url}."
+    import preferencias
+    nav = preferencias.abrir_url(url)
+    return f"Abriendo {url}" + (f" en {nav}." if nav else ".")
 
 
 @skill("bloquear_pantalla", "Bloquea la sesión de Windows.")

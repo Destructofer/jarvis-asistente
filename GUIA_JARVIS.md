@@ -202,6 +202,27 @@ GPU, el cerebro y la visión con `qwen3.5:4b` (cabe entero en una GPU de 6 GB: ~
 menos fino que la nube en planes complejos (es un modelo chico); `model_profundo` permite usar
 uno más grande solo para pensar a fondo si tienes una GPU con más memoria.
 
+## Memoria y aprendizaje (`preferencias.py`, `memoria.py`)
+
+Jarvis aprende cómo quieres que haga las cosas y lo sigue haciendo, también después de
+reiniciarlo, hasta que le digas otra cosa:
+
+| Dices | Qué aprende | Desde ese momento |
+|---|---|---|
+| "De ahora en adelante usa Opera como navegador" | navegador = Opera | Las páginas, búsquedas y "abre el navegador" van a Opera |
+| "Para la música prefiero YouTube" | música = YouTube | "Pon música de…" usa YouTube |
+| "Usa DuckDuckGo para buscar" | buscador = DuckDuckGo | Las búsquedas usan ese buscador |
+| "Mi editor de código es VS Code" | código = VS Code | "Abre mi editor de código" abre ese |
+| "Siempre que te pida un resumen, guárdalo en Word" | una instrucción permanente | La sigue cada vez que aplica |
+| "Ya no uses Opera, vuelve a Chrome" | cambia la preferencia | Usa Chrome |
+| "¿Qué preferencias tienes de mí?" / "Olvida la regla de los resúmenes" | — | Te las dice / la borra |
+
+Las preferencias de apps las aplica el código (no dependen de que el modelo se acuerde); las
+instrucciones van al contexto del modelo en cada orden. También **recuerda las conversaciones**
+(los últimos 5000 mensajes, `memoria.max_mensajes`): "¿de qué hablamos ayer?", "¿qué te dije
+del examen?". Fijar una preferencia o instrucción pide confirmación si en la conversación entró
+texto de terceros (Teams, páginas, documentos), para que nadie te las siembre.
+
 ## Jarvis te ve y entiende tus manos (estilo Iron Man)
 
 Usa la cámara de la laptop (`config.json → camara.usuario_indice`, normalmente 0). Lo que tiene

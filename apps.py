@@ -489,6 +489,12 @@ def _destino_real(destino):
        "Pásale el nombre tal como lo dijo el usuario.",
        {"nombre": {"type": "string", "description": "Nombre de la aplicación"}})
 def abrir_app(nombre):
+    # "abre el navegador", "abre mi editor de código": la app que elegiste (preferencias.py)
+    import preferencias
+    elegida = preferencias.app_para(nombre)
+    if elegida:
+        os.startfile(os.path.expandvars(elegida[1]))
+        return f"Abriendo {elegida[0]}."
     mejor = buscar_app(nombre)
     if mejor is None and not _indice:
         reindexar()

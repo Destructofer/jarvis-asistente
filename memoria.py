@@ -63,9 +63,11 @@ def _activa():
 def iniciar(cfg):
     global _CFG
     _CFG = cfg
-    # Conserva solo los últimos 500 mensajes
+    # Conserva los últimos N mensajes (memoria.max_mensajes): con 500 se borraba lo de hace un
+    # par de días y "¿de qué hablamos la semana pasada?" no tenía respuesta
     _q("DELETE FROM mensajes WHERE id NOT IN "
-       "(SELECT id FROM mensajes ORDER BY id DESC LIMIT 500)", escribir=True)
+       "(SELECT id FROM mensajes ORDER BY id DESC LIMIT ?)",
+       (int(_mem().get("max_mensajes", 5000)),), escribir=True)
 
 
 # ---------- Recuerdos ----------
@@ -176,7 +178,82 @@ def consultar_memoria(tema=""):
         hits = listar_hechos()
         if not hits:
             return "Todavía no tengo nada guardado."
-    return "Recuerdos: " + " | ".join(h["texto"] for h in hits)
+    texto = "Recuerdos: " + " | ".join(h["texto"] for h in hits)
+    if not _tokens(tema):  # "¿qué sabes de mí?": también lo que te pidió que hicieras siempre
+        try:
+            import preferencias
+            extra = preferencias.ver_preferencias()
+            if not extra.startswith("Todavía"):
+                texto += " " + extra
+        except Exception:
+            pass
+    return texto
+
+
+# ---------- Conversaciones pasadas ----------
+def _rango(cuando):
+    """'hoy', 'ayer', 'la semana pasada', '2026-10-02' -> (desde, hasta) en ISO, o (None, None)."""
+    t = skills._norm(cuando or "")
+    hoy = datetime.date.today()
+    dias = {"hoy": (0, 1), "ayer": (1, 1), "antier": (2, 1), "anteayer": (2, 1),
+            "esta semana": (hoy.weekday(), hoy.weekday() + 1),
+            "la semana pasada": (hoy.weekday() + 7, 7), "semana pasada": (hoy.weekday() + 7, 7),
+            "este mes": (hoy.day - 1, hoy.day)}
+    if t in ("hace rato", "hace un rato", "hace un momento", "hace poco", "recien", "esta manana",
+             "esta tarde", "esta noche", "hoy temprano", "en la manana", "al rato"):
+        t = "hoy"
+    if t in dias:
+        atras, n = dias[t]
+        desde = hoy - datetime.timedelta(days=atras)
+        return desde.isoformat(), (desde + datetime.timedelta(days=n)).isoformat()
+    m = re.match(r"(\d{4})\s(\d{1,2})\s(\d{1,2})$", t)
+    if m:
+        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return d.isoformat(), (d + datetime.timedelta(days=1)).isoformat()
+    return None, None
+
+
+# Las preguntas del tipo "¿de qué hablamos de X?" no son la conversación sobre X: se saltan
+PREGUNTA_RECUERDO = re.compile(r"\b(de que hablamos|que hablamos|que te dije|que te conte|que te pedi|"
+                               r"que te habia|recuerdas|te acuerdas|que me dijiste)\b")
+
+
+@skill("recordar_conversacion",
+       "Busca en las conversaciones pasadas con el usuario (de otros días también): qué se dijo "
+       "sobre un tema o qué se habló en una fecha. Úsala para '¿de qué hablamos ayer?', '¿qué me "
+       "dijiste del examen?', '¿qué te había pedido la semana pasada?', 'como te comenté antes...'.",
+       {"tema": {"type": "string", "description": "Palabras del tema (opcional)"},
+        "cuando": {"type": "string", "description": "hoy, ayer, antier, esta semana, la semana pasada, "
+                                                    "este mes o AAAA-MM-DD (opcional)"}},
+       requeridos=[], terminal=False)
+def recordar_conversacion(tema="", cuando=""):
+    if not _activa():
+        return MSG_OFF
+    desde, hasta = _rango(cuando)  # una fecha que no entienda no impide buscar el tema
+    sql, params = "SELECT ts, rol, contenido FROM mensajes", []
+    if desde:
+        sql += " WHERE ts >= ? AND ts < ?"
+        params += [desde, hasta]
+    filas = _q(sql + " ORDER BY id", tuple(params))
+    tokens = _tokens(tema)
+    if tokens:  # lo que DIJO el usuario sobre el tema, con la respuesta que siguió (si se buscara
+        # también en las respuestas, un "no recuerdo haber hablado de eso" tapaba lo importante)
+        idx = [i for i, f in enumerate(filas) if f["rol"] == "user"
+               and not PREGUNTA_RECUERDO.search(skills._norm(f["contenido"]))
+               and sum(t[:5] in skills._norm(f["contenido"]) for t in tokens) >= max(1, len(tokens) // 2)]
+        elegidos = sorted({j for i in idx for j in (i, i + 1) if j < len(filas)})
+        filas = [filas[j] for j in elegidos]
+    if not filas:
+        return "No encontré conversaciones sobre eso" + (f" ({cuando})." if cuando else ".")
+    lineas, total = [], 0
+    for f in reversed(filas):  # lo más reciente primero, hasta ~1800 caracteres
+        quien = "Usuario" if f["rol"] == "user" else "Jarvis"
+        linea = f"[{f['ts'][:16].replace('T', ' ')}] {quien}: {f['contenido'][:220]}"
+        total += len(linea)
+        if total > 1800:
+            break
+        lineas.append(linea)
+    return "Conversaciones encontradas (más recientes primero):\n" + "\n".join(lineas)
 
 
 @skill("olvidar",

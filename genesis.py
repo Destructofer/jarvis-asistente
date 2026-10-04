@@ -29,6 +29,7 @@ import multimedia  # noqa: F401  (registra las skills youtube y spotify)
 import observador  # observa al público en modo expositor (dudas, con quién platicas)
 import panel
 import presencia  # Jarvis te ve: te saluda al llegar, nota cómo estás, te mira si se lo pides
+import preferencias  # navegador, música, apps preferidas e instrucciones permanentes
 import presentacion
 import realidad  # modo realidad aumentada con las manos
 import recordatorios
@@ -279,6 +280,10 @@ GRUPOS = [
     (r"recuerd|recordatorio|temporizador|alarma|aviso|avisame|minutos|olvida|memoria|anota|guarda|sabes de mi",
      ["temporizador", "recordatorio", "listar_avisos", "cancelar_avisos", "recordar",
       "consultar_memoria", "olvidar", "olvidar_todo"]),
+    # Conversaciones pasadas (memoria.recordar_conversacion)
+    (r"hablamos|platicamos|te dije|te conte|te comente|me dijiste|te habia|te pedi|"
+     r"la otra vez|el otro dia|ayer|antier|la semana pasada|antes de|recuerdas cuando|que te",
+     ["recordar_conversacion"]),
     # Sin "sistema" ni "equipo" sueltos: en una demo "el sistema" es tu software y "el equipo"
     # son tus compañeros; antes "muéstrales el sistema" metía también apagar/reiniciar/Wi-Fi
     # (38 herramientas en la petición, ~2.800 tokens solo de descripciones).
@@ -296,6 +301,11 @@ GRUPOS = [
      r"donde esta|encuentra|cuenta|cuantos|cuantas|lee esta|lee este|leer esta|hoja|pizarron|"
      r"etiqueta|identifica|que es esto|vigila|avisame si|avisame cuando|peligro|riesgo",
      ["mirar", "escanear_entorno", "vigilar_camara", "crear_documento"]),
+    # Preferencias e instrucciones permanentes (preferencias.py)
+    (r"de ahora en adelante|a partir de ahora|desde ahora|en adelante|por defecto|predeterminad|"
+     r"prefiero|preferencia|ya no uses|deja de usar|en lugar de|en vez de|siempre que|cada vez que|"
+     r"siempre usa|nunca uses|instruccion|regla|olvida la|cambia mi|mi navegador|mi buscador",
+     ["fijar_preferencia", "aprender_regla", "ver_preferencias", "olvidar_preferencia"]),
     # Pensar con exactitud (cognicion.py): cuentas y fechas se calculan, no se adivinan
     (r"\d|cuanto|cuanta|calcula|suma|resta|multiplica|divide|porcentaje|por ciento|precio|cuesta|"
      r"cambio|total|promedio|mitad|doble|triple",
@@ -1295,6 +1305,13 @@ GUIAS = {
     "modo_realidad": "Para el modo realidad aumentada (entorno virtual, holograma, como las gafas "
                      "de Apple) usa modo_realidad; para salir, activar=false.",
     "calcular": "Si la respuesta depende de una cuenta, usa calcular; nunca la hagas de memoria.",
+    "recordar_conversacion": "Si pregunta por algo que se habló antes y no está en esta "
+                             "conversación ('¿de qué hablamos?', 'lo que te dije de...'), búscalo "
+                             "con recordar_conversacion ANTES de decir que no lo recuerdas.",
+    "fijar_preferencia": "Si dice qué quiere usar de ahora en adelante para algo (navegador, "
+                         "música, editor, buscador...), usa fijar_preferencia; si es una forma de "
+                         "hacer las cosas que debes seguir siempre, aprender_regla. No basta con "
+                         "decir que lo recordarás: guárdalo con la herramienta.",
     "recordatorio": "Si pide que le avises o le recuerdes algo en un tiempo o a una hora "
                     "('recuérdame en 10 minutos...', 'avísame a las 5'), usa recordatorio o "
                     "temporizador; recordar es solo para guardar un dato sobre él.",
@@ -1349,6 +1366,7 @@ def _prompt(cfg, herramientas=None, texto=""):
     if navegador is not None:
         partes.append(navegador.contexto())
     partes.append(presencia.contexto())  # lo que Jarvis ve de ti (si la cámara está activa)
+    partes.append(preferencias.contexto())  # tus preferencias e instrucciones permanentes
     guias = [g for n, g in GUIAS.items() if herramientas is not None and n in herramientas]
     if guias:
         partes.append("\n\nCómo usar estas herramientas: " + " ".join(guias))

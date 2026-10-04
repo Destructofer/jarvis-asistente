@@ -786,5 +786,75 @@ class Cognicion(unittest.TestCase):
         self.assertFalse(cognicion.SOBRE_SI.search(skills._norm("abre spotify")))
 
 
+class MemoriaYPreferencias(unittest.TestCase):
+    """Lo que Jarvis aprende y sigue usando: preferencias, instrucciones y conversaciones."""
+
+    def setUp(self):
+        import memoria
+        self._dir = tempfile.TemporaryDirectory()
+        self._db = memoria.DB_PATH
+        memoria.DB_PATH = Path(self._dir.name) / "prueba.db"
+
+    def tearDown(self):
+        import memoria
+        memoria.DB_PATH = self._db
+        self._dir.cleanup()
+
+    def test_categorias(self):
+        import preferencias as pr
+        self.assertEqual(pr.categoria_de("el navegador"), "navegador")
+        self.assertEqual(pr.categoria_de("mi browser"), "navegador")
+        self.assertEqual(pr.categoria_de("mi editor de código"), "codigo")
+        self.assertEqual(pr.categoria_de("el buscador"), "buscador")
+
+    def test_preferencia_se_usa_y_se_cambia(self):
+        import apps
+        import preferencias as pr
+        abiertos, viejo = [], (apps.buscar_app, os.startfile)
+        apps.buscar_app = lambda n: ("Opera GX", r"C:\Opera\opera.exe", 0.9) if "opera" in n.lower() \
+            else ("Google Chrome", r"C:\Chrome\chrome.exe", 0.9)
+        os.startfile = lambda ruta, *a: abiertos.append((ruta, a[1] if len(a) > 1 else None))
+        try:
+            self.assertIn("Opera", pr.fijar_preferencia("navegador", "opera"))
+            pr.abrir_url("https://ejemplo.com")
+            self.assertEqual(abiertos[-1], (r"C:\Opera\opera.exe", "https://ejemplo.com"))
+            self.assertEqual(pr.app_para("el navegador")[0], "Opera GX")
+            self.assertIn("cambié", pr.fijar_preferencia("navegador", "chrome"))
+            pr.abrir_url("https://ejemplo.com")
+            self.assertEqual(abiertos[-1][0], r"C:\Chrome\chrome.exe")
+            self.assertEqual(len(pr.todas()), 1)  # se reemplaza, no se acumula
+        finally:
+            apps.buscar_app, os.startfile = viejo
+
+    def test_buscador_y_servicios(self):
+        import preferencias as pr
+        self.assertIn("google.com", pr.url_busqueda("pozole"))
+        pr.fijar_preferencia("buscador", "DuckDuckGo")
+        self.assertIn("duckduckgo.com", pr.url_busqueda("pozole"))
+        pr.fijar_preferencia("música", "YouTube")
+        self.assertIn("música: YouTube", pr.contexto().replace("musica", "música"))
+        self.assertIsInstance(pr.fijar_preferencia("buscador", "Altavista 3000"), skills.Fallo)
+
+    def test_reglas_sin_duplicar_y_olvidar(self):
+        import preferencias as pr
+        pr.aprender_regla("Siempre que te pida un resumen, guárdalo en Word")
+        pr.aprender_regla("siempre que te pida un resumen guárdalo en Word por favor")
+        self.assertEqual(len(pr.reglas()), 1)
+        self.assertIn("INSTRUCCIONES PERMANENTES", pr.contexto())
+        self.assertIsInstance(pr.aprender_regla("mi contraseña del banco es 1234"), skills.Fallo)
+        pr.olvidar_preferencia("resumen word")
+        self.assertEqual(pr.reglas(), [])
+
+    def test_recordar_conversacion(self):
+        import memoria
+        memoria.guardar_mensaje("user", "Busca en internet recetas de pozole")
+        memoria.guardar_mensaje("assistant", "Buscando recetas de pozole.")
+        memoria.guardar_mensaje("user", "¿De qué hablamos del pozole?")
+        memoria.guardar_mensaje("assistant", "No recuerdo haber hablado de pozole.")
+        r = memoria.recordar_conversacion(tema="pozole", cuando="hace rato")
+        self.assertIn("recetas de pozole", r)
+        self.assertNotIn("De qué hablamos", r)  # las preguntas de memoria no tapan lo importante
+
+
 if __name__ == "__main__":
     unittest.main()

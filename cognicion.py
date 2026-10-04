@@ -94,6 +94,12 @@ SOBRE_SI = re.compile(
     r"suelo|cada (?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|manana|noche)|"
     r"mi (?:\w+ )?favorit[oa]|alergic)\b")
 
+# "De ahora en adelante usa Opera", "prefiero YouTube": son preferencias (preferencias.py), no
+# hechos sueltos; si se guardaran también como hecho, al cambiarlas quedaría el dato viejo
+PREFERENCIA = re.compile(r"\b(de ahora en adelante|a partir de ahora|desde ahora|por defecto|"
+                         r"predeterminad|prefiero|ya no uses|en vez de|en lugar de|siempre que|"
+                         r"cada vez que)\b")
+
 EXTRAER = (
     "Del mensaje del usuario, extrae SOLO hechos duraderos sobre él que sirvan para ayudarlo en "
     "el futuro: gustos, preferencias, personas importantes, qué estudia o en qué trabaja, sus "
@@ -145,6 +151,8 @@ def aprender(cfg, texto):
         return
     if not texto or not SOBRE_SI.search(skills._norm(texto)):
         return
+    if PREFERENCIA.search(skills._norm(texto)):
+        return  # eso lo guarda fijar_preferencia/aprender_regla (y se puede cambiar después)
 
     def hacer():
         try:

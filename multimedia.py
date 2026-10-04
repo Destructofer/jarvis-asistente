@@ -40,6 +40,15 @@ def _primer_video(consulta):
     return m.group(1) if m else None
 
 
+def _abrir(url):
+    """Con tu navegador preferido (preferencias.py); si no elegiste uno, el de Windows."""
+    try:
+        import preferencias
+        preferencias.abrir_url(url)
+    except Exception:
+        webbrowser.open(url)
+
+
 @skill("youtube",
        "Busca o reproduce algo en YouTube. Con modo 'reproducir' abre directamente el primer vídeo "
        "que coincide (canciones, videoclips, tutoriales, noticias); con 'resultados' muestra la "
@@ -51,7 +60,7 @@ def _primer_video(consulta):
 def youtube(consulta="", modo="reproducir"):
     consulta = (consulta or "").strip()
     if not consulta:
-        webbrowser.open("https://www.youtube.com")
+        _abrir("https://www.youtube.com")
         return "Abriendo YouTube."
     if modo != "resultados":
         try:
@@ -59,9 +68,9 @@ def youtube(consulta="", modo="reproducir"):
         except (URLError, OSError):
             vid = None
         if vid:
-            webbrowser.open(f"https://www.youtube.com/watch?v={vid}")
+            _abrir(f"https://www.youtube.com/watch?v={vid}")
             return f"Reproduciendo en YouTube: {consulta}."
-    webbrowser.open("https://www.youtube.com/results?search_query=" + quote_plus(consulta))
+    _abrir("https://www.youtube.com/results?search_query=" + quote_plus(consulta))
     return f"Mostrando en YouTube los resultados de: {consulta}."
 
 
@@ -278,7 +287,7 @@ def spotify(consulta, tipo="track"):
         os.startfile(uri)
     except OSError:
         _, tipo_uri, id_ = uri.split(":")
-        webbrowser.open(f"https://open.spotify.com/{tipo_uri}/{id_}")
+        _abrir(f"https://open.spotify.com/{tipo_uri}/{id_}")
     if tipo == "track":
         return f"Reproduciendo {nombre} en Spotify."
     aviso = "" if token else " Di 'conecta mi Spotify' una vez para que la reproduzca sola."
