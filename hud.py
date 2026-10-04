@@ -51,8 +51,8 @@ POR_ESTADO = {"escuchando": "espera", "pensando": "pensando", "mirando": "cyborg
 # aparezcan signifiquen algo (un error, una descarga, algo terminado)
 NO_ALEATORIAS = ("confundido", "descargando", "completado")
 POSE = "espera"            # la pose inicial y rígida: entre animación y animación
-PAUSA_LIBRE = (2.5, 5.0)   # s de pose entre animaciones del modo libre (al azar en ese rango)
-PAUSA_CAMBIO = 0.6         # s de pose al pasar de una animación a otra distinta
+PAUSA_LIBRE = (4.0, 7.0)   # s de pose entre animaciones del modo libre (al azar en ese rango)
+PAUSA_CAMBIO = 1.0         # s de pose al pasar de una animación a otra distinta
 ALTO_FIGURA = 0.78         # alto del muñeco, como fracción de hud.tamano: igual en TODAS
 DURACION_COMPLETADO = 3.6  # s del pulgar arriba al terminar una acción o una descarga
 
@@ -543,6 +543,34 @@ def _pose():
     return _av["pose"]
 
 
+_baraja = []  # animaciones del modo libre que faltan por salir en esta vuelta
+
+
+def _libres():
+    """Todo lo que puede salir en el modo libre: cualquier GIF del avatar (también los de
+    categorías que casi nunca se usan para una acción, y las poses de 'espera' además de la
+    principal). Solo se reservan los que nombraste con una categoría de significado propio
+    (confundido.gif, descargando.gif, completado.gif): esos salen únicamente cuando pasa eso.
+    Los que Jarvis clasificó solo en esas categorías también salen entre ratos."""
+    import avatares
+    return [a for cat, lista in _av["por_cat"].items() for a in lista
+            if a != _pose() and not (cat in NO_ALEATORIAS
+                                     and avatares.categoria_por_nombre(Path(a).stem) == cat)]
+
+
+def _sacar_de_la_baraja(ultimo):
+    """Como una baraja: salen todas una vez, en orden al azar, antes de repetir alguna (con
+    random.choice cada vez, unas se repetían y otras casi no salían)."""
+    disponibles = set(_libres())
+    _baraja[:] = [a for a in _baraja if a in disponibles]  # se borró un GIF o cambió el avatar
+    if not _baraja:
+        _baraja.extend(disponibles)
+        random.shuffle(_baraja)
+        if len(_baraja) > 1 and _baraja[-1] == ultimo:  # que no repita la que acaba de salir
+            _baraja.insert(0, _baraja.pop())
+    return _baraja.pop() if _baraja else None
+
+
 def _siguiente_libre(ahora):
     """Modo libre (Jarvis sin nada que hacer): alterna la pose rígida unos segundos con una
     animación al azar, para que se vea vivo pero sin encadenar animaciones de corrido."""
@@ -550,13 +578,10 @@ def _siguiente_libre(ahora):
     if not v["libre_pose"]:  # después de una animación (o al empezar): la pose
         archivo, dura = _pose(), random.uniform(*PAUSA_LIBRE)
     else:
-        opciones = [a for cat, lista in _av["por_cat"].items()
-                    if cat not in NO_ALEATORIAS and cat != POSE
-                    for a in lista if a != v["libre_archivo"]]
-        if not opciones:
+        archivo = _sacar_de_la_baraja(v["libre_archivo"])
+        if archivo is None:
             archivo, dura = _pose(), random.uniform(*PAUSA_LIBRE)
         else:
-            archivo = random.choice(opciones)
             vuelta = _duracion(archivo)
             dura = min(7.0, max(2.5, vuelta * (2 if vuelta < 2.5 else 1)))
     v["libre_pose"] = archivo == _pose()

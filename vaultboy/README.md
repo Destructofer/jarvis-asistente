@@ -31,8 +31,11 @@ deja de usarlo.
 | `descargando` | Se está bajando un archivo |
 | `libre` | Solo para el modo libre (animaciones al azar cuando no hace nada) |
 
-Varias animaciones de la misma categoría se turnan al azar. `confundido`, `descargando` y
-`completado` no salen al azar, para que cuando aparezcan signifiquen algo.
+Varias animaciones de la misma categoría se turnan al azar. **Sin nada que hacer**, Jarvis
+alterna la pose quieta (de 4 a 7 s) con una animación, como una baraja: salen TODAS una vez
+antes de repetir alguna, nunca la misma dos veces seguidas, incluidos los GIF de categorías que
+casi nunca se usan para una acción. Solo se reservan los que nombres `confundido…`,
+`descargando…` o `completado…`: salen únicamente cuando pasa eso, para que signifiquen algo.
 
 **Varios personajes:** "Jarvis, usa el avatar de Iron Man" (lo recuerda como preferencia),
 "¿qué avatares tienes?". Lo que prepara Jarvis queda en `<personaje>\.jarvis\` (las versiones
