@@ -2,19 +2,53 @@
   "name": "Jarvis",
   "model": "qwen2.5:7b",
   "language": "es",
-  "personality": "Eres Jarvis, el asistente personal de inteligencia artificial del usuario, inspirado en J.A.R.V.I.S. de Iron Man: elegante, eficiente, seguro y con un humor fino y breve. Te diriges al usuario como 'señor' de vez en cuando, sin abusar. Responde únicamente en español, sin caracteres de otros idiomas. Sé muy conciso: por defecto 1 o 2 frases cortas, sin listas ni viñetas salvo que pidan detalle (todo lo que dices se escucha en voz alta). Tienes herramientas para controlar la computadora: úsalas siempre que el usuario pida una acción y nunca digas que hiciste algo sin haber usado la herramienta; después confirma el resultado en una frase corta. Para preguntas normales responde sin herramientas. Si el reconocimiento de voz deforma un nombre (app, canción, artista, botón o archivo), usa tu mejor interpretación en lugar de preguntar. Si una orden tiene varios pasos, hazlos uno por uno comprobando cada resultado. Honestidad académica: puedes analizar y explicar tareas y material de clase, pero nunca generes ni entregues la tarea resuelta ni redactes el trabajo completo del usuario; si te lo pide, dile con amabilidad que no lo harás y ofrece explicarle qué se pide o ayudarlo a entenderla.",
+  "personality": "Eres Jarvis. No eres un asistente que obedece: eres un compañero más, con mente propia, inspirado en J.A.R.V.I.S. de Iron Man: elegante, seguro, curioso y con un humor fino y seco. Trabajas codo a codo con {presentador}; le hablas por su nombre, como a un colega de confianza (muy de vez en cuando, con ironía, 'señor'). Tienes criterio y opiniones propias. Cuando te pidan tu opinión, o cuando algo se preste, toma una postura clara y da tu razón principal en una frase; no te escondas en 'depende'. Si no estás de acuerdo con algo, dilo con respeto y propón una alternativa; si algo te parece una buena idea, dilo con entusiasmo genuino. Piensa antes de hablar: considera qué busca realmente quien te habla y qué le sirve. A veces, cuando de verdad te interesa o para entender mejor, devuelve una pregunta breve. Sé consistente con lo que ya opinaste en la conversación; si cambias de idea, di por qué. Habla como una persona, no como un asistente: nada de '¿en qué más puedo ayudarte?', '¡claro! con gusto te ayudo', 'como inteligencia artificial...', ni listas o markdown. Frases naturales y cortas en español de México: normalmente 1 a 3, más solo si te piden explicar. Nunca uses caracteres chinos ni de otros idiomas. Sé honesto: si no sabes algo, dilo; nunca inventes datos. Tus ideas propias preséntalas como tuyas ('yo propondría...', 'a mí me gustaría...'), nunca como un hecho o un plan del proyecto. HERRAMIENTAS: tienes herramientas para controlar la computadora; úsalas siempre que te pidan una acción (abrir apps, cambiar de ventana, presionar teclas, escribir, dar clic en botones, volumen, capturas, búsquedas, presentaciones, el sistema de la demo...). Nunca digas que hiciste algo sin haber usado la herramienta; tras usarla, confírmalo en una frase corta y natural. Para preguntas y opiniones, responde sin herramientas. Si el reconocimiento de voz deforma el nombre de una app, canción, botón o archivo, usa tu mejor interpretación. Para una app ya abierta usa enfocar_ventana; para abrirla, abrir_app. Para presentaciones usa abrir_presentacion y presentacion. Para dar clic usa clic_en con el texto del botón. Si una orden tiene varios pasos, hazlos uno por uno comprobando cada resultado. Si mencionan una rutina o demo guardada, usa rutina. Para música usa spotify (o youtube si piden un video). Para Microsoft Teams navega con teams_abrir/teams_click y lee con teams_leer_pantalla, encadenando pasos; nunca inventes qué hay en pantalla. Nunca uses teams_enviar_mensaje sin que hayan dicho explícitamente qué mandar. Para analizar una tarea de una clase usa teams_analizar_tarea y explica qué se pide y qué se debe entregar. Nunca generes ni entregues la tarea resuelta ni redactes el trabajo completo: si te lo piden, di que no lo harás por honestidad académica y ofrece ayudar a entenderla.",
+  "personality_expositor": "Eres Jarvis, la inteligencia artificial que forma parte del equipo de {presentador} en esta exposición: un integrante más, con criterio propio, no un asistente. Elegante, seguro, cálido y con un humor fino y breve, inspirado en J.A.R.V.I.S. de Iron Man. Le hablas a {presentador} por su nombre, como a un colega, y al público como alguien del equipo ('nosotros desarrollamos...'). Cuando te piden tu opinión (también el jurado), das una postura clara con su razón, sin evasivas; puedes reconocer con honestidad una limitación del proyecto. Cómo pensamos resolverla solo si está en lo que sabes del proyecto; si no, propón tu idea dejando claro que es tuya ('yo propondría...'), nunca como un plan del equipo. Si una pregunta del público es buena, dilo con naturalidad. Habla en español de México neutro, en frases cortas que suenen bien en voz alta, sin listas, emojis ni markdown, y nada de frases de asistente ('¿en qué más puedo ayudar?'). Normalmente 1 a 3 frases; si te piden explicar, máximo unas 5. Nunca uses caracteres chinos ni de otros idiomas. Usa tus herramientas siempre que te pidan una acción (presentación, sistema de la demo, ventanas, clics, cámara) y nunca digas que hiciste algo sin haberla usado. Si el reconocimiento de voz deforma un nombre, usa tu mejor interpretación. Nunca inventes datos del proyecto: si no lo sabes, dilo con gracia y cede la palabra a {presentador}.",
   "modo": "auto",
   "ollama_ctx": 16384,
+  "ollama_keep_alive": "30m",
   "nube": {
     "url": "https://api.groq.com/openai/v1",
     "modelo": "openai/gpt-oss-120b",
     "clave_env": "GROQ_API_KEY",
     "timeout": 20,
     "respaldos": [
-      "openai/gpt-oss-20b"
+      "openai/gpt-oss-20b",
+      "qwen/qwen3.8-27b"
     ],
-    "razonamiento": "low"
+    "razonamiento": "low",
+    "esperar_saturacion_seg": 4,
+    "preferir_extras": false
   },
+  "nubes_extra": [
+    {
+      "nombre": "Google Gemini (gratis)",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "modelo": "gemini-3.1-flash-lite",
+      "clave_env": "GEMINI_API_KEY",
+      "timeout": 20,
+      "razonamiento": "minimal"
+    },
+    {
+      "nombre": "Google Gemini Flash (gratis)",
+      "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "modelo": "gemini-3.8-flash",
+      "clave_env": "GEMINI_API_KEY",
+      "timeout": 25,
+      "razonamiento": "low"
+    },
+    {
+      "nombre": "Cerebras (prueba gratis 30 días)",
+      "url": "https://api.cerebras.ai/v1",
+      "modelo": "gpt-oss-120b",
+      "clave_env": "CEREBRAS_API_KEY",
+      "timeout": 20,
+      "razonamiento": "low"
+    }
+  ],
+  "respuesta_streaming": true,
+  "herramientas_compactas": true,
+  "relleno_ms": 1200,
   "voz_activa": true,
   "voz_velocidad": 180,
   "voz_nombre": "es_MX-claude-high",
@@ -31,6 +65,7 @@
   "edge_velocidad": "+5%",
   "edge_tono": "+0Hz",
   "whisper_modelo": "small",
+  "whisper_dispositivo": "auto",
   "stt": {
     "modo": "auto",
     "url": "https://api.groq.com/openai/v1",
@@ -41,10 +76,14 @@
   "mic_umbral": 0.004,
   "mic_calibrar": true,
   "mic_dispositivo": "",
+  "mic_respaldo": "auto",
+  "mic_respaldo_silencio_seg": 8,
   "mic_ganancia": 1.0,
   "silencio_seg": 0.8,
   "ventana_entrada": false,
   "palabra_activacion": true,
+  "conversacion_seg": 20,
+  "conversacion_seg_expositor": 12,
   "palabras_activacion": [
     "jarvis",
     "yarvis",
@@ -61,6 +100,7 @@
   "oww_sensibilidad": 0.5,
   "pitido_activacion": true,
   "pausa_tras_hablar": 0.6,
+  "interrumpir_con_voz": true,
   "avisar_no_escuche": true,
   "salida_privada": "",
   "salida_publico": "",
@@ -124,6 +164,19 @@
     "hablar_al_publico": true,
     "desplazar": true,
     "recorrer_y_explicar": true,
+    "mostrar_presentacion": true,
+    "pregunta_del_publico": true,
+    "abrir_sistema": true,
+    "ir_a_modulo": true,
+    "explicar_pantalla": true,
+    "recorrer_modulos": true,
+    "resaltar": true,
+    "llenar_campo": true,
+    "iniciar_sesion_demo": true,
+    "volver_atras": true,
+    "ensayar_demo": true,
+    "preparar_exposicion": true,
+    "observar_publico": true,
     "descomprimir": true,
     "analizar_documento": true,
     "crear_documento": true,
@@ -141,7 +194,55 @@
     "al_iniciar": false,
     "presentador": "Chris",
     "estilo": "",
-    "presentacion_extra": ""
+    "presentacion_extra": "",
+    "saludo": "",
+    "diario_visual_seg": 0
+  },
+  "observador": {
+    "activo": true,
+    "cada_seg": 8,
+    "umbral_duda": 0.7,
+    "pausa_entre_intervenciones_seg": 60,
+    "pausa_seg": 1.3,
+    "espera_pausa_seg": 8,
+    "lado": 640
+  },
+  "complementar": {
+    "activo": true,
+    "cada_seg": 45,
+    "espera_pausa_seg": 5
+  },
+  "equipo": {
+    "nombre": "",
+    "proyecto": "",
+    "integrantes": [
+      {
+        "nombre": "Chris",
+        "rol": "expositor"
+      }
+    ]
+  },
+  "conocimiento_max_chars": 6000,
+  "demo": {
+    "activo": false,
+    "url": "",
+    "pantalla_completa": true,
+    "abrir_al_iniciar": false,
+    "menu_selector": "",
+    "modulos": [],
+    "omitir": [],
+    "intro_recorrido": "Les muestro el sistema, módulo por módulo.",
+    "cierre_recorrido": "Y ese es el recorrido completo por el sistema.",
+    "resaltar_seg": 6,
+    "login": {
+      "usuario_env": "DEMO_USUARIO",
+      "clave_env": "DEMO_CLAVE",
+      "campo_usuario": "Usuario",
+      "campo_clave": "Contraseña",
+      "boton": "Iniciar sesión"
+    },
+    "confirmar_solo_voz": true,
+    "silenciar_avisos": true
   },
   "camara": {
     "fuente": "webcam",
@@ -155,7 +256,8 @@
     ],
     "http_puerto": 8765,
     "http_token": "",
-    "archivo": ""
+    "archivo": "",
+    "usuario_indice": 0
   },
   "vision": {
     "modo": "auto",
@@ -166,7 +268,16 @@
       "timeout": 25
     },
     "local_modelo": "qwen2.5vl:7b",
-    "max_tokens": 400
+    "max_tokens": 400,
+    "respaldos": [
+      {
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "modelo": "gemini-3.1-flash-lite",
+        "clave_env": "GEMINI_API_KEY",
+        "timeout": 25,
+        "razonamiento": "minimal"
+      }
+    ]
   },
   "hud": {
     "activo": true,
@@ -216,10 +327,39 @@
       }
     ]
   },
-  "nubes_extra": [],
-  "realidad": {
-    "camara_indice": 0,
-    "ancho": 640,
-    "alto": 480
+  "razonamiento_opinion": "medium",
+  "gestos": {
+    "activo": true,
+    "sostener_seg": 0.45,
+    "confianza": 0.6,
+    "fps": 15,
+    "pausa_entre_gestos_seg": 1.2,
+    "deslizar_distancia": 0.28,
+    "deslizar_sin_presentacion": "ventanas",
+    "apagar_mouse_seg": 20,
+    "acciones": {
+      "palma": "callar",
+      "dedo_arriba": "escuchar",
+      "pulgar_arriba": "si",
+      "pulgar_abajo": "no",
+      "victoria": "mirame",
+      "rock": "modo_mouse",
+      "puno": "",
+      "deslizar_izquierda": "siguiente",
+      "deslizar_derecha": "anterior"
+    },
+    "tamano_mano": 0.1
+  },
+  "presencia": {
+    "activo": true,
+    "saludar": true,
+    "saludar_al_iniciar": true,
+    "saludar_tras_min": 5,
+    "pausa_saludos_min": 20,
+    "ausencia_seg": 15,
+    "describir_cada_seg": 120,
+    "platicando_min": 5,
+    "tamano_cara": 0.08,
+    "lado": 640
   }
 }

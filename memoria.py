@@ -145,7 +145,10 @@ def prompt_sistema(personalidad):
        "usuario diga 'recuerda que', 'anota', 'guarda' o similar. Escribe el dato como frase "
        "completa en tercera persona, por ejemplo 'El usuario prefiere el café sin azúcar'. "
        "Nunca para contraseñas ni datos bancarios.",
-       {"dato": {"type": "string", "description": "El dato a recordar, como frase completa"}})
+       {"dato": {"type": "string", "description": "El dato a recordar, como frase completa"}},
+       # sensible: lo recordado entra al prompt de sistema en CADA turno como si lo hubiera
+       # dicho el usuario; un mensaje de Teams no debe poder "sembrar" una instrucción ahí
+       sensible=True)
 def recordar(dato):
     if not _activa():
         return MSG_OFF

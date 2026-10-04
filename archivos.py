@@ -9,15 +9,12 @@ from pathlib import Path
 import psutil
 
 from apps import fonetica
-from skills import _norm, skill
+from skills import Fallo, _norm, skill
 
 CARPETAS_USUARIO = ("Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos")
 IGNORAR = {"node_modules", "__pycache__", "venv", "site-packages", "AppData", "Windows",
            "Program Files", "Program Files (x86)", "ProgramData", "$Recycle.Bin",
            "System Volume Information", "Recovery"}
-# Nunca se abren desde una búsqueda: un nombre mal oído no debe ejecutar programas
-PELIGROSAS = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".msi", ".scr", ".com",
-              ".lnk", ".reg", ".jar", ".dll", ".hta", ".wsf"}
 TIPOS = {
     "documento": {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".txt", ".odt",
                   ".ods", ".odp", ".csv", ".rtf", ".md", ".json", ".xml", ".html", ".htm", ".epub"},
@@ -26,6 +23,13 @@ TIPOS = {
     "video": {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm"},
     "musica": {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac"},
 }
+# Lo ÚNICO que se abre desde una búsqueda (lista blanca, no negra): un nombre mal oído no debe
+# ejecutar nada. Con lista negra siempre faltaba algo: en este equipo .py, .url, .cpl y .msc
+# se ejecutan con doble clic y no estaban en la lista.
+PERMITIDAS = set().union(*TIPOS.values()) | {
+    ".pptm", ".ppsx", ".pps", ".odp", ".ods", ".rtf", ".md", ".json", ".xml", ".epub",
+    ".svg", ".tif", ".tiff", ".ico", ".m4v", ".mpg", ".mpeg", ".3gp", ".opus", ".wma", ".mid",
+    ".zip", ".7z", ".rar"}
 STOP = {"el", "la", "los", "las", "de", "del", "un", "una", "archivo", "documento", "carpeta",
         "mi", "mis", "que", "se", "llama", "llamado", "en", "con", "y"}
 VIGENCIA = 600  # segundos que se reutiliza el índice antes de volver a recorrer el disco
@@ -149,6 +153,11 @@ def _buscar(consulta, tipo, ambito):
     return res
 
 
+def se_puede_abrir(nombre):
+    """True si el archivo es de un tipo que solo se ve (documento, imagen, audio, video)."""
+    return os.path.splitext(nombre)[1].lower() in PERMITIDAS
+
+
 def _describir(r):
     _, _, nombre, ruta, es_dir = r
     return f"{nombre}{' (carpeta)' if es_dir else ''} en {Path(ruta).parent.name or Path(ruta).anchor}"
@@ -200,19 +209,20 @@ def abrir_archivo(consulta="", numero=0, tipo="cualquiera"):
     numero = int(numero or 0)
     if numero:
         if not 1 <= numero <= len(_ultimos):
-            return "No tengo ese resultado; haz primero una búsqueda."
+            return Fallo("No tengo ese resultado; haz primero una búsqueda.")
         elegido, otros = _ultimos[numero - 1], 0
     else:
         if not consulta.strip():
-            return "Dime qué archivo quieres abrir."
+            return Fallo("Dime qué archivo quieres abrir.")
         res = _buscar_con_reintento(consulta, tipo, "usuario")
         if not res:
-            return f"No encontré nada parecido a '{consulta}'. Puedo buscar en todo el equipo."
+            return Fallo(f"No encontré nada parecido a '{consulta}'. Puedo buscar en todo el equipo.")
         _ultimos, elegido, otros = res[:5], res[0], len(res) - 1
 
     _, _, nombre, ruta, es_dir = elegido
-    if not es_dir and os.path.splitext(nombre)[1].lower() in PELIGROSAS:
-        return f"'{nombre}' es un ejecutable o acceso directo; no lo abro desde una búsqueda."
+    if not es_dir and not se_puede_abrir(nombre):
+        return Fallo(f"'{nombre}' no es un documento, imagen, audio o video; por seguridad no lo "
+                     "abro desde una búsqueda (podría ejecutar algo).")
     aviso = f" Había {otros} coincidencias más; abrí la mejor." if otros else ""
     try:
         os.startfile(ruta)

@@ -30,9 +30,9 @@ POR_HERRAMIENTA = {
     "buscando": {"buscar_web", "buscar_archivo", "hora_fecha", "abrir_web", "consultar_memoria", "listar_avisos",
                  "listar_rutinas", "listar_microfonos", "teams_leer_pantalla", "teams_listar_clases",
                  "teams_buscar_archivos_clase", "leer_ventana", "youtube", "desplazar",
-                 "teams_desplazar"},
+                 "teams_desplazar", "explicar_pantalla"},
     "pensando": {"analizar_documento", "teams_analizar_tarea", "explicar_diapositiva",
-                 "recorrer_y_explicar"},
+                 "recorrer_y_explicar", "pregunta_del_publico"},
     "ciencia": {"escanear_entorno", "crear_documento", "info_sistema", "revisar_equipo",
                 "captura_pantalla"},
     "ejecutando": {"abrir_app", "cerrar_app", "enfocar_ventana", "presionar_teclas", "escribir_texto",
@@ -41,11 +41,14 @@ POR_HERRAMIENTA = {
                    "limpiar_temporales", "vaciar_papelera", "apagar_equipo", "reiniciar_equipo",
                    "cancelar_apagado", "bloquear_pantalla", "wifi", "cambiar_microfono",
                    "temporizador", "recordatorio", "cancelar_avisos", "recordar", "olvidar",
-                   "olvidar_todo"},
+                   "olvidar_todo", "abrir_sistema", "ir_a_modulo", "volver_atras", "llenar_campo",
+                   "iniciar_sesion_demo", "resaltar", "recorrer_modulos", "ensayar_demo",
+                   "mostrar_presentacion", "preparar_exposicion"},
     "tecnologia": {"spotify", "musica", "conectar_spotify", "teams_abrir", "teams_click",
                    "teams_enviar_mensaje", "conectar_archivos_teams", "modo_realidad",
-                   "modo_expositor"},
-    "cyborg": {"mirar", "vigilar_camara", "presentarse_al_publico", "hablar_al_publico"},
+                   "modo_expositor", "gestos"},
+    "cyborg": {"mirar", "vigilar_camara", "presentarse_al_publico", "hablar_al_publico",
+               "mirar_usuario", "vista_usuario", "observar_publico"},
 }
 _HERRAMIENTA_A_CATEGORIA = {h: c for c, hs in POR_HERRAMIENTA.items() for h in hs}
 
@@ -86,3 +89,9 @@ def clasificar(texto, herramientas=None):
     """(texto limpio, categoría) para cualquier respuesta."""
     limpio, categoria = separar(texto)
     return limpio, categoria or deducir(herramientas, limpio)
+
+
+def es_inicio_etiqueta(texto):
+    """True si el texto es el comienzo de una etiqueta cortada ("[ACC", "[Acción: ejec")."""
+    t = _norm(texto).replace(" ", "")
+    return "[accion:".startswith(t[:8]) or t.startswith("[accion")

@@ -40,7 +40,6 @@ PyGetWindow==0.0.9
 PyMsgBox==2.0.1
 pypdf==6.19.0
 pyperclip==1.11.0
-pypiwin32==223
 PyRect==0.2.0
 PyScreeze==1.0.1
 pystray==0.19.5
@@ -59,11 +58,14 @@ truststore==0.10.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 
-# --- Agregado para Jarvis ---
+# --- Agregado para Jarvis (versiones fijas: las que se probaron juntas) ---
 openwakeword==0.6.0        # palabra de activación "hey Jarvis" (ligera, sin transcribir todo)
-opencv-python>=4.10        # cámara (OBS Virtual Camera / webcam) para el modo expositor
-python-pptx>=1.0           # leer el contenido de las diapositivas si PowerPoint no responde por COM
-edge-tts>=7.2               # voces neuronales de Microsoft (gratis, muy naturales; requiere internet)
-openpyxl>=3.1              # leer hojas de Excel (.xlsx) para resumirlas (documentos.py)
-mediapipe>=0.10            # seguimiento de manos para el modo realidad aumentada (realidad.py)
-windows-capture>=2.0       # ver las ventanas en vivo en el modo realidad aumentada (Windows Graphics Capture)
+opencv-python==5.0.0.93    # cámara (OBS Virtual Camera / webcam) para el modo expositor
+python-pptx==1.0.2         # leer el contenido de las diapositivas si PowerPoint no responde por COM
+edge-tts==7.2.8            # voces neuronales de Microsoft (gratis, muy naturales; requiere internet)
+playwright==1.63.0         # manejar el software de la demo en Chrome (usa tu Chrome instalado)
+mediapipe==1.0.1          # gestos de la mano, si estás frente a la PC y la realidad aumentada (local)
+openpyxl==3.1.5            # leer hojas de Excel (.xlsx) para resumirlas (documentos.py)
+windows-capture==2.0.1     # ver las ventanas en vivo en el modo realidad aumentada (realidad.py)
+
+# Opcional: Whisper en la GPU NVIDIA (mucho más rápido) → pip install -r requirements-gpu.txt

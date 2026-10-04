@@ -6,7 +6,6 @@ si ejecutas: python autoinicio.py instalar). El registro queda en datos\\genesis
 import ctypes
 import os
 import sys
-import threading
 import time
 import traceback
 from pathlib import Path
@@ -15,7 +14,20 @@ BASE = Path(__file__).parent
 os.chdir(BASE)
 sys.path.insert(0, str(BASE))
 
-# Una sola instancia: si ya hay un Genesis corriendo, este sale sin hacer nada
+# "Salir" desde la bandeja deja esta marca. El vigilante (tarea programada cada 5 min, se
+# lanza con --vigilante) la respeta: antes, a los pocos minutos de salir, Jarvis volvía solo.
+# Abrirlo a mano (doble clic, o al iniciar sesión) la borra y arranca normal.
+DETENIDO = BASE / "datos" / "detenido.flag"
+if "--vigilante" in sys.argv:
+    if DETENIDO.exists():
+        sys.exit(0)
+else:
+    try:
+        DETENIDO.unlink()
+    except OSError:
+        pass
+
+# Una sola instancia: si ya hay un Jarvis corriendo, este sale sin hacer nada
 _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 _mutex = _kernel.CreateMutexW(None, False, "Genesis.Asistente.Instancia")
 if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
@@ -75,6 +87,11 @@ def _ver_registro(_icono, _item):
 
 
 def _salir(icono, _item):
+    try:
+        DETENIDO.parent.mkdir(exist_ok=True)
+        DETENIDO.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+    except OSError:
+        pass
     icono.stop()
     os._exit(0)
 

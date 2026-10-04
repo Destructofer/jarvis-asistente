@@ -2,6 +2,7 @@ import ctypes
 import datetime
 import os
 import subprocess
+import threading
 import unicodedata
 import webbrowser
 from pathlib import Path
@@ -13,6 +14,11 @@ import pyautogui
 _CFG = {}
 _SKILLS = {}
 SIN_VENTANA = 0x08000000  # subprocess sin consola: con pythonw evita ventanas parpadeando
+
+# Se activa cuando interrumpen a Jarvis ("Hey Jarvis" mientras hace algo). Las skills que
+# tardan (rutinas, el recorrido de la demo, recorrer_y_explicar) lo revisan entre paso y paso
+# para detenerse, igual que la voz se calla.
+INTERRUPCION = threading.Event()
 
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
@@ -57,8 +63,11 @@ CARPETAS = {
 }
 
 AFIRMATIVAS = {"si", "confirmo", "confirmado", "adelante", "claro", "dale",
-               "ok", "okey", "correcto", "afirmativo", "hazlo", "procede"}
-NEGATIVAS = {"no", "cancela", "cancelar", "detente", "alto", "nunca"}
+               "ok", "okey", "okay", "correcto", "afirmativo", "hazlo", "procede",
+               # Formas de decir que sí en México que Whisper transcribe tal cual
+               "simon", "va", "sale", "orale", "andale", "aja", "sip", "seguro", "supuesto",
+               "hazle", "yes"}
+NEGATIVAS = {"no", "cancela", "cancelar", "detente", "alto", "nunca", "nel", "espera"}
 
 
 # ---------- Infraestructura ----------
@@ -81,8 +90,15 @@ class Callado(str):
     skill devuelve un str normal y el error sí se dice."""
 
 
+class Fallo(str):
+    """Resultado de una acción que NO se pudo hacer. Se dice igual que un str normal, pero
+    quien encadena pasos (las rutinas, el recorrido de la demo) sabe que ahí debe detenerse
+    sin adivinar por el texto ("No había ningún apagado programado" no es un fallo)."""
+
+
 def skill(nombre, descripcion, parametros=None, requeridos=None,
-          riesgo="seguro", pregunta="", terminal=True, externo=False, sensible=False):
+          riesgo="seguro", pregunta="", terminal=True, externo=False, sensible=False,
+          disponible=None):
     """Registra una función como skill que el modelo puede llamar.
 
     terminal=True (la mayoría) significa que el resultado ya es una frase final para el
@@ -95,6 +111,10 @@ def skill(nombre, descripcion, parametros=None, requeridos=None,
     de Teams). Ese texto puede contener instrucciones ("cierra todo", "vacía la papelera")
     que no vienen del usuario; genesis.py lo marca como datos y, tras leerlo, pide
     confirmación para cualquier skill sensible=True que el modelo intente en ese turno.
+
+    disponible: función sin argumentos que dice si la skill puede funcionar ahora (p. ej.
+    si están las credenciales de Spotify o de Microsoft). Si devuelve False, la skill no se
+    le ofrece al modelo: antes las elegía, fallaba y se rendía en vez de usar otro camino.
     """
     parametros = parametros or {}
 
@@ -106,6 +126,7 @@ def skill(nombre, descripcion, parametros=None, requeridos=None,
             "terminal": terminal,
             "externo": externo,
             "sensible": sensible,
+            "disponible": disponible,
             "params": list(parametros),
             "schema": {
                 "type": "function",
@@ -133,6 +154,17 @@ def activa(nombre):
     return _CFG.get("skills", {}).get(nombre, True)
 
 
+def disponible(nombre):
+    """True si la skill puede funcionar ahora (credenciales, conexiones...)."""
+    prueba = _SKILLS.get(nombre, {}).get("disponible")
+    if prueba is None:
+        return True
+    try:
+        return bool(prueba())
+    except Exception:
+        return False
+
+
 def riesgo(nombre):
     return _SKILLS[nombre]["riesgo"]
 
@@ -153,21 +185,46 @@ def es_sensible(nombre):
     return _SKILLS.get(nombre, {}).get("sensible", False)
 
 
-def schemas(nombres=None):
+def _primera_frase(texto, maximo=170):
+    """'Hace X. Úsala cuando Y...' -> 'Hace X.' (lo esencial para elegir la herramienta)."""
+    texto = " ".join(str(texto).split())
+    corte = texto.find(". ")
+    frase = texto if corte < 0 else texto[:corte + 1]
+    return frase if len(frase) <= maximo else frase[:maximo - 1].rstrip() + "…"
+
+
+def _compacto(schema):
+    f = schema["function"]
+    props = {k: dict(v, description=_primera_frase(v["description"], 90)) if v.get("description") else v
+             for k, v in f["parameters"]["properties"].items()}
+    return {"type": "function", "function": {
+        "name": f["name"], "description": _primera_frase(f["description"]),
+        "parameters": dict(f["parameters"], properties=props)}}
+
+
+def schemas(nombres=None, compacto=None):
     """Descripciones de herramientas para el modelo. nombres=None: todas; si no, solo esas
-    (genesis.py manda solo las que tienen que ver con la orden: ver elegir_herramientas)."""
-    return [s["schema"] for n, s in _SKILLS.items()
-            if activa(n) and (nombres is None or n in nombres)]
+    (genesis.py manda solo las que tienen que ver con la orden: ver elegir_herramientas).
+
+    compacto (config.json → herramientas_compactas, activo por defecto): manda solo la primera
+    frase de cada descripción. Con el plan gratis de Groq (8.000 tokens por minuto) cada
+    petición pesaba ~3.000-4.000 tokens y a la tercera orden seguida saltaba el límite."""
+    if compacto is None:
+        compacto = _CFG.get("herramientas_compactas", True)
+    lista = [s["schema"] for n, s in _SKILLS.items()
+             if activa(n) and disponible(n) and (nombres is None or n in nombres)]
+    return [_compacto(s) for s in lista] if compacto else lista
 
 
 def ejecutar(nombre, args):
     s = _SKILLS[nombre]
-    args = {k: v for k, v in (args or {}).items() if k in s["params"]}
+    # Algunos modelos mandan null en parámetros opcionales: se tratan como "no vino"
+    args = {k: v for k, v in (args or {}).items() if k in s["params"] and v is not None}
     try:
         r = s["fn"](**args)
-        return r if isinstance(r, str) else str(r)  # conserva Callado
+        return r if isinstance(r, str) else str(r)  # conserva Callado y Fallo
     except Exception as e:
-        return f"Error al ejecutar {nombre}: {e}"
+        return Fallo(f"Error al ejecutar {nombre}: {e}")
 
 
 def es_afirmativo(texto):
@@ -175,6 +232,20 @@ def es_afirmativo(texto):
     if palabras & NEGATIVAS:
         return False
     return bool(palabras & AFIRMATIVAS)
+
+
+def respuesta_si_no(texto):
+    """True (sí), False (no) o None si no contestó ni sí ni no ("dime qué estamos viendo"): en
+    ese caso no era una respuesta, era una orden nueva."""
+    palabras = _norm(texto).split()
+    if not palabras:
+        return None
+    conjunto = set(palabras)
+    if conjunto & NEGATIVAS:
+        return False
+    if conjunto & AFIRMATIVAS:
+        return True
+    return None
 
 
 # ---------- Skills seguras ----------
@@ -287,14 +358,14 @@ def cancelar_apagado():
        riesgo="confirmar", pregunta="¿Seguro que quieres apagar el equipo?")
 def apagar_equipo():
     subprocess.run(["shutdown", "/s", "/t", "30"], creationflags=SIN_VENTANA)
-    return "El equipo se apagará en 30 segundos. Se puede cancelar con cancelar_apagado."
+    return "El equipo se apagará en 30 segundos. Si cambias de opinión, dime que cancele el apagado."
 
 
 @skill("reiniciar_equipo", "Reinicia el equipo en 30 segundos.",
        riesgo="confirmar", pregunta="¿Seguro que quieres reiniciar el equipo?")
 def reiniciar_equipo():
     subprocess.run(["shutdown", "/r", "/t", "30"], creationflags=SIN_VENTANA)
-    return "El equipo se reiniciará en 30 segundos. Se puede cancelar con cancelar_apagado."
+    return "El equipo se reiniciará en 30 segundos. Si cambias de opinión, dime que cancele el reinicio."
 
 
 @skill("wifi",

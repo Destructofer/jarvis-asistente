@@ -140,7 +140,8 @@ def _cuadro_chico(cfg):
     if cuadro is None:
         c = cfg.get("camara", {}) or {}
         if c.get("fuente", "webcam") == "webcam":
-            img = camara._lector.foto(int(c.get("webcam_indice", 0)))
+            indice = int(c.get("webcam_indice", 0))
+            img = camara.lector(indice).foto(indice)
         else:  # lentes por ventana, celular por http...: la misma fuente que mirar
             img = camara.capturar(cfg)
         cuadro = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)

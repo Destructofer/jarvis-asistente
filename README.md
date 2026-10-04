@@ -1,8 +1,17 @@
 # Jarvis (basado en Genesis)
 
-> Esta copia agrega control total de la PC, PowerPoint por voz, modo expositor con la cámara
-> de los lentes Ray-Ban Meta, visión y un HUD estilo Iron Man. Todo lo de Genesis (incluido
-> Teams) sigue igual. **Empieza por [GUIA_JARVIS.md](GUIA_JARVIS.md).**
+> Esta copia convierte a Genesis en un integrante más del equipo para exponer: control total
+> de la PC, PowerPoint por voz, modo expositor con la cámara de los lentes Ray-Ban Meta (por
+> videollamada), manejo del software de la demo en el navegador con su propio cursor, voz en
+> streaming, visión y un HUD estilo Iron Man. Todo lo de Genesis (incluido Teams) sigue igual.
+> **Empieza por [GUIA_JARVIS.md](GUIA_JARVIS.md)** y corre `python diagnostico.py demo`.
+>
+> Módulos agregados: `navegador.py` (software de la demo con Playwright), `conocimiento.py` +
+> `conocimiento/` (lo que sabe del proyecto), `configuracion.py` (guardado atómico de
+> config.json), `tests/` (pruebas sin micrófono ni internet). También: `documentos.py`
+> (descomprimir, leer, resumir y guardar documentos), `entorno.py` (escanear el entorno y vigilar
+> con la cámara), `realidad.py` (modo realidad aumentada con las manos), `acciones.py` +
+> `vaultboy/` (el Vault Boy del HUD según la acción) y `descargas.py` (el HUD muestra las descargas).
 
 # Genesis
 
@@ -14,11 +23,20 @@ reproducir en Spotify/YouTube, y navegar Microsoft Teams.
 
 ## Cómo está armado
 
-- **genesis.py** — bucle principal: escucha, decide, ejecuta, responde.
-- **escuchar.py** / **voz.py** — entrada (Whisper) y salida de voz (Piper, con respaldo de
-  Windows y opción de ElevenLabs).
-- **cerebro.py** — el modelo de lenguaje: nube (Groq) si hay internet y clave configurada,
-  si no cae a un modelo local con Ollama.
+- **genesis.py** — bucle principal: escucha, decide, ejecuta, responde. Cada orden es un
+  `Turno`: la respuesta se dice mientras el modelo la escribe, con relleno si tarda y
+  corte inmediato si lo interrumpen ("Hey Jarvis").
+- **escuchar.py** — micrófono continuo (`Microfono`, con respaldo automático si el principal se
+  queda mudo o se desconecta), palabra de activación (Whisper u openWakeWord), transcripción
+  con filtro de alucinaciones y Whisper en la GPU si hay CUDA.
+- **voz.py** — `Locucion`: frases generadas en paralelo y reproducidas en orden y por turnos
+  (ElevenLabs en streaming → Edge → Piper → Windows), caché de frases y `detener()`.
+- **cerebro.py** — el modelo de lenguaje: nube (Groq, en streaming, conexiones persistentes)
+  si hay internet y clave configurada, con respaldos gratis en otras nubes (Google Gemini,
+  Cerebras: `nubes_extra`); si nada responde, cae a un modelo local con Ollama.
+- **gestos.py** / **presencia.py** — la cámara de la laptop: gestos de la mano estilo Iron Man
+  (callar, escuchar, sí/no, mouse con la mano, deslizar diapositivas) y saber si estás frente
+  a la PC para saludarte y tomar en cuenta cómo te ve. MediaPipe, local y gratis.
 - **skills.py** — el registro de "herramientas" que el modelo puede llamar (`@skill(...)`) y
   la infraestructura común (confirmaciones para acciones riesgosas, etc.).
 - **memoria.py** — recuerdos permanentes e historial, en SQLite (`datos/genesis.db`).
@@ -101,8 +119,12 @@ funcione.
 python autoinicio.py instalar             # arranca con Windows + vigilante que lo relanza si se cae
 ```
 
-El vigilante es una tarea programada (`GenesisVigilante`) que cada 5 minutos intenta lanzar
-Genesis; si ya está corriendo no hace nada. `python autoinicio.py quitar` quita las dos cosas.
+El vigilante es una tarea programada (`JarvisVigilante`) que cada 5 minutos intenta lanzar
+Jarvis; si ya está corriendo no hace nada, y si lo cerraste con "Salir" en la bandeja lo
+respeta hasta que lo abras a mano. `python autoinicio.py quitar` quita las dos cosas. (Si lo
+instalaste antes de esta versión, corre `python autoinicio.py instalar` otra vez.)
+
+Pruebas: `.venv\Scripts\python -m unittest discover -s tests -v`.
 
 En la bandeja, **"Escribir una orden"** (o doble clic en el icono) abre la ventana para
 escribir sin decir "Genesis" — útil si el micrófono no está oyendo o prefieres no hablar.
@@ -132,9 +154,15 @@ Procesos del sistema (`explorer`, `dwm`, el propio Genesis...) nunca se cierran:
 
 - Los tokens de Spotify y Microsoft se guardan cifrados con DPAPI de Windows
   (`secreto.py`): solo tu usuario de Windows en ese equipo puede leerlos.
-- Con el modo en la nube, lo que le dices a Genesis — incluido el contenido de documentos y
-  mensajes de Teams que le pidas leer — se envía a Groq para procesarlo. Si no quieres que
-  algo salga del equipo, usa `"modo": "offline"` (modelo local con Ollama).
+- Con el modo en la nube, lo que le dices a Genesis — el audio de tus órdenes (transcripción),
+  el texto, las imágenes de la cámara y el contenido de documentos y mensajes de Teams que le
+  pidas leer — se envía a Groq para procesarlo, y lo que responde se envía a ElevenLabs (o a
+  Microsoft Edge) para generar la voz. Si no quieres que algo salga del equipo, usa
+  `"modo": "offline"`, `"stt": {"modo": "local"}` y `"voz_motor": "windows"` (o Piper).
+- Los gestos y la detección de si estás frente a la PC se calculan en el equipo (MediaPipe);
+  solo el saludo, los vistazos y "mírame" envían una foto pequeña al modelo de visión.
+- Los últimos ~45 s de audio del micrófono se guardan solo en memoria (para "responde la
+  pregunta que me hicieron"); nunca se escriben a disco.
 - La conversación se guarda en `datos/genesis.db` (últimos 500 mensajes) y en
   `datos/genesis.log`. Ninguno de los dos se sube a git.
 

@@ -1139,16 +1139,16 @@ class Escena:
             U32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
         except Exception:
             pass
-        indice = int(self.conf.get("camara_indice", 0))
-        cap = None
+        # La webcam se lee del lector compartido de camara.py, el mismo que usan los gestos y la
+        # presencia: Windows solo deja abrir la cámara a uno a la vez (si cada quien la abría
+        # por su lado, se la quitaban entre sí)
+        indice = int(self.conf.get("camara_indice", camara.indice_usuario(self.cfg)))
+        lector = camara.lector(indice)
         try:
-            camara._lector.parar()  # suelta la webcam si mirar la tenía abierta
-            cap = cv2.VideoCapture(indice, cv2.CAP_DSHOW)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.conf.get("ancho", 640)))
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.conf.get("alto", 480)))
-            ok, cuadro = cap.read()
-            if not ok or cuadro is None:
-                raise RuntimeError(f"No pude abrir la cámara número {indice}.")
+            try:
+                lector.foto(indice)  # espera el primer cuadro (o avisa si la cámara no abre)
+            except camara.CamaraError as e:
+                raise RuntimeError(str(e)) from e
             # LIVE_STREAM: MediaPipe detecta en su propio hilo mientras aquí se dibuja. En modo
             # VIDEO (en serie) eran ~40 ms de manos + ~28 ms de dibujo por cuadro: 14 fps.
             def al_detectar(resultado, _imagen, _ts):
@@ -1167,11 +1167,13 @@ class Escena:
             self.listo.set()
             t_inicio, t_fps, cuadros, capa, t_encima, ts = time.time(), time.time(), 0, None, 0.0, 0
             fallos = 0
+            ultimo_ts = 0.0
             while not self.parar.is_set():
-                ok, cuadro = cap.read()
-                if not ok or cuadro is None:
-                    time.sleep(0.01)
+                cuadro, ts_cuadro = lector.ultimo(indice)
+                if cuadro is None or ts_cuadro == ultimo_ts:
+                    time.sleep(0.005)
                     continue
+                ultimo_ts = ts_cuadro
                 self.crudo = cuadro
                 espejo = cv2.flip(cuadro, 1)
                 ch, cw = espejo.shape[:2]
@@ -1238,8 +1240,6 @@ class Escena:
             for e in self._ventanas():
                 if e.captura:
                     e.captura.detener()
-            if cap is not None:
-                cap.release()
             try:
                 cv2.destroyWindow(TITULO)
                 cv2.waitKey(1)

@@ -172,7 +172,8 @@ def _esperar_codigo(estado, resultado):
        "Autoriza a Jarvis a controlar la reproducción de Spotify (álbumes, playlists, pausar, "
        "saltar), no solo abrir canciones sueltas. Es un trámite de una sola vez: abre el navegador "
        "para que el usuario inicie sesión y acepte. Úsala cuando el usuario pida conectar, vincular "
-       "o autorizar Spotify.")
+       "o autorizar Spotify.",
+       disponible=lambda: all(_credenciales()))
 def conectar_spotify():
     cid, secreto = _credenciales()
     if not (cid and secreto):

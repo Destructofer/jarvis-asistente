@@ -4,10 +4,11 @@
     python autoinicio.py quitar     -> quita las dos cosas
     python autoinicio.py estado
 
-El vigilante es una tarea programada que cada 5 minutos intenta lanzar Genesis. Si ya está
+El vigilante es una tarea programada que cada 5 minutos intenta lanzar Jarvis. Si ya está
 corriendo, la copia nueva detecta la instancia existente (mutex en iniciar_genesis.pyw) y
 sale sin hacer nada; si el proceso murió de golpe (un cierre forzado que el reinicio interno
-no alcanza a atrapar), así vuelve solo sin esperar al próximo inicio de sesión.
+no alcanza a atrapar), así vuelve solo sin esperar al próximo inicio de sesión. Si lo cerraste
+tú con "Salir" en la bandeja, el vigilante lo respeta (--vigilante + datos/detenido.flag).
 """
 import subprocess
 import sys
@@ -32,7 +33,8 @@ def _schtasks(*args):
 def instalar():
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, CLAVE, 0, winreg.KEY_SET_VALUE) as k:
         winreg.SetValueEx(k, NOMBRE, 0, winreg.REG_SZ, COMANDO)
-    r = _schtasks("/Create", "/F", "/TN", TAREA, "/SC", "MINUTE", "/MO", "5", "/TR", COMANDO)
+    r = _schtasks("/Create", "/F", "/TN", TAREA, "/SC", "MINUTE", "/MO", "5", "/TR",
+                  COMANDO + " --vigilante")
     print("Jarvis arrancará con Windows.")
     print("Vigilante instalado." if r.returncode == 0 else f"No pude crear el vigilante: {r.stderr.strip()}")
 

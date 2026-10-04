@@ -44,6 +44,11 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 TOKEN_PATH = Path(__file__).parent / "datos" / "graph_usuario.json"
 LEGIBLES = (".docx", ".pdf", ".txt", ".md")
 MAX_TEXTO = 6000  # caracteres por documento que se pasan al modelo, para no disparar el contexto
+# Tope para TODO lo que devuelve teams_analizar_tarea junto. Antes eran hasta 6 documentos x
+# 6.000 = 36.000 caracteres (~9-10 mil tokens): el plan gratis de Groq permite ~8.000 tokens
+# por minuto, así que la petición fallaba siempre. El reparto da más espacio a los primeros
+# (los más relacionados con la tarea).
+MAX_TOTAL = 14000
 UMBRAL_CLASE = 0.35   # nombres de clase suelen ser largos y formales; se dicen más cortos
 UMBRAL_ARCHIVO = 0.3  # "encontrar todo lo relacionado" pide ser generoso, no exacto
 
@@ -51,6 +56,17 @@ UMBRAL_ARCHIVO = 0.3  # "encontrar todo lo relacionado" pide ser generoso, no ex
 # ---------- Autorización (una sola vez) ----------
 def _credenciales():
     return (os.environ.get("GRAPH_CLIENT_ID", ""), os.environ.get("GRAPH_CLIENT_SECRET", ""))
+
+
+def _hay_credenciales():
+    return all(_credenciales())
+
+
+def _conectado():
+    """Hay credenciales y ya se autorizó una vez (hay token guardado). Sin esto, las skills de
+    lectura no se le ofrecen al modelo: antes las elegía, fallaba y le pedía al usuario
+    "conectar archivos" en vez de simplemente navegar Teams por pantalla."""
+    return _hay_credenciales() and TOKEN_PATH.exists()
 
 
 def _guardar_tokens(datos):
@@ -110,7 +126,8 @@ def _esperar_codigo(estado, resultado):
        "Autoriza a Jarvis a leer las clases, canales y archivos (Word, PDF) de Microsoft "
        "Teams. Trámite de una sola vez: abre el navegador para iniciar sesión con la cuenta "
        "de la escuela y aceptar. Úsala cuando el usuario pida conectar, vincular o autorizar "
-       "el acceso a los archivos o materiales de Teams.")
+       "el acceso a los archivos o materiales de Teams.",
+       disponible=_hay_credenciales)
 def conectar_archivos_teams():
     cid, secreto = _credenciales()
     if not (cid and secreto):
@@ -244,13 +261,37 @@ def _archivos_de_clase(clase, token):
     return archivos
 
 
-def _extraer_texto(nombre, contenido):
+def _texto_docx(contenido):
+    """Párrafos Y tablas, en el orden en que aparecen. Document.paragraphs se salta las
+    tablas, y en las guías de tareas ahí suelen ir la rúbrica y los criterios de evaluación."""
+    from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    doc = Document(io.BytesIO(contenido))
+    lineas = []
+    for bloque in doc.element.body.iterchildren():
+        etiqueta = bloque.tag.rsplit("}", 1)[-1]
+        if etiqueta == "p":
+            t = Paragraph(bloque, doc).text.strip()
+            if t:
+                lineas.append(t)
+        elif etiqueta == "tbl":
+            for fila in Table(bloque, doc).rows:
+                celdas = []
+                for c in fila.cells:
+                    t = " ".join(c.text.split())
+                    if t and (not celdas or celdas[-1] != t):  # celdas combinadas se repiten
+                        celdas.append(t)
+                if celdas:
+                    lineas.append(" | ".join(celdas))
+    return "\n".join(lineas)
+
+
+def _extraer_texto(nombre, contenido, maximo=MAX_TEXTO):
     ext = Path(nombre).suffix.lower()
     try:
         if ext == ".docx":
-            from docx import Document
-            texto = "\n".join(p.text for p in Document(io.BytesIO(contenido)).paragraphs
-                              if p.text.strip())
+            texto = _texto_docx(contenido)
         elif ext == ".pdf":
             from pypdf import PdfReader
             texto = "\n".join((pg.extract_text() or "") for pg in PdfReader(io.BytesIO(contenido)).pages)
@@ -259,17 +300,24 @@ def _extraer_texto(nombre, contenido):
     except Exception as e:
         return f"[No pude leer '{nombre}': {type(e).__name__}]"
     texto = texto.strip() or "[Sin texto extraíble (¿documento escaneado como imagen?)]"
-    return texto[:MAX_TEXTO] + ("\n[...documento recortado, sigue más...]" if len(texto) > MAX_TEXTO else "")
+    return texto[:maximo] + ("\n[...documento recortado, sigue más...]" if len(texto) > maximo else "")
 
 
-def _leer_archivo(archivo, token):
+def _leer_archivo(archivo, token, maximo=MAX_TEXTO):
     ext = Path(archivo["nombre"]).suffix.lower()
     if ext not in LEGIBLES:
         return f"[{archivo['nombre']}: formato .{ext.lstrip('.')} todavía no lo leo]"
     req = Request(f"{GRAPH}/drives/{archivo['drive_id']}/items/{archivo['item_id']}/content",
                   headers={"Authorization": f"Bearer {token}"})
     contenido = _pedir(req, timeout=25).read()
-    return _extraer_texto(archivo["nombre"], contenido)
+    return _extraer_texto(archivo["nombre"], contenido, maximo)
+
+
+def _repartir(total, n):
+    """Caracteres para cada uno de n documentos: más para los primeros (los más relacionados)."""
+    pesos = [1.0 / (i + 1) ** 0.5 for i in range(n)]
+    suma = sum(pesos)
+    return [max(800, min(MAX_TEXTO, int(total * p / suma))) for p in pesos]
 
 
 def _sin_conexion():
@@ -278,7 +326,7 @@ def _sin_conexion():
 
 # ---------- Skills ----------
 @skill("teams_listar_clases", "Lista las clases o equipos de Microsoft Teams a los que perteneces.",
-       terminal=False)
+       terminal=False, disponible=_conectado)
 def teams_listar_clases():
     token = _token()
     if not token:
@@ -296,7 +344,7 @@ def teams_listar_clases():
        {"clase": {"type": "string", "description": "Nombre aproximado de la clase"},
         "consulta": {"type": "string",
                      "description": "Nombre o tema a buscar; vacío lista todos los archivos"}},
-       requeridos=["clase"], terminal=False, externo=True)
+       requeridos=["clase"], terminal=False, externo=True, disponible=_conectado)
 def teams_buscar_archivos_clase(clase, consulta=""):
     token = _token()
     if not token:
@@ -324,7 +372,7 @@ def teams_buscar_archivos_clase(clase, consulta=""):
        "tarea, solo reúne y lee el material para analizarlo.",
        {"clase": {"type": "string", "description": "Nombre aproximado de la clase"},
         "tarea": {"type": "string", "description": "Nombre de la tarea o actividad a analizar"}},
-       requeridos=["clase", "tarea"], terminal=False, externo=True)
+       requeridos=["clase", "tarea"], terminal=False, externo=True, disponible=_conectado)
 def teams_analizar_tarea(clase, tarea):
     token = _token()
     if not token:
@@ -339,7 +387,9 @@ def teams_analizar_tarea(clase, tarea):
         disponibles = " | ".join(a["ruta"] for a in archivos[:15])
         return (f"No encontré archivos en '{hallada['nombre']}' relacionados con '{tarea}'. "
                f"Esto sí hay disponible: {disponibles or '(sin archivos)'}")
-    partes = [f"--- {a['ruta']} ---\n{_leer_archivo(a, token)}" for a in relacionados]
+    topes = _repartir(MAX_TOTAL, len(relacionados))
+    partes = [f"--- {a['ruta']} ---\n{_leer_archivo(a, token, tope)}"
+              for a, tope in zip(relacionados, topes)]
     return "\n\n".join(partes)
 
 

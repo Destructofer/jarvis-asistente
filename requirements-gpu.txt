@@ -1,0 +1,5 @@
+# Whisper en la GPU (solo con tarjeta NVIDIA). faster-whisper/ctranslate2 necesitan cuBLAS y
+# cuDNN de CUDA 12; con esto Jarvis los encuentra solo (escuchar._preparar_cuda). Sin ellos,
+# Whisper corre en la CPU como siempre.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

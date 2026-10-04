@@ -14,5 +14,8 @@ config.json
 voces/*.onnx
 voces/*.onnx.json
 
+# Modelos de MediaPipe (gestos y presencia): gestos.py los descarga solos la primera vez
+modelos/
+
 # Animaciones de Vault Boy (arte de Fallout/Bethesda): cada quien pone las suyas. Ver vaultboy/README.md
 vaultboy/*.gif
