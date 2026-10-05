@@ -1829,6 +1829,7 @@ def main(persistente=False):
     archivos.iniciar()   # índice de tus archivos (en segundo plano)
     mantenimiento.iniciar(cfg, lambda texto: avisar(cfg, texto), ocupado=lambda: presentando(cfg))
     avatares.iniciar()   # prepara los GIF nuevos y vigila la carpeta de avatares
+    realidad.restaurar_pendientes()  # ventanas que un mosaico dejó achicadas si Jarvis se cerró de golpe
     hud.iniciar(cfg)
     descargas.iniciar(cfg)
     interaccion.iniciar()  # omite solos los anuncios de YouTube que se pueden omitir

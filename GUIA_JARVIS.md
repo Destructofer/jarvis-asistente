@@ -339,9 +339,21 @@ YouTube. Lo peligroso (comprar, borrar, enviar...) se confirma antes de pulsarlo
 flotan tus ventanas abiertas **en vivo** y los iconos de YouTube, Spotify y Steam. Con las manos:
 
 - Pellizco corto (pulgar con índice) sobre una ventana o icono → se abre grande e interactiva.
-- Dentro de ella: toque = clic real, pellizcar y deslizar = scroll, mantener ½ s y mover = arrastrar.
+- **Se usa como un escritorio normal.** Cualquier ventana que se vea grande se usa directo (tocarla
+  la enfoca y le da clic ahí mismo, sin reacomodar nada): toque = clic, dos toques = doble clic
+  (abrir archivos y carpetas), **pulgar con dedo medio = clic derecho** (menú contextual),
+  pellizcar y deslizar = scroll, mantener ½ s y mover = arrastrar.
+- **Mover archivos y carpetas:** mantén el pellizco sobre el archivo y llévalo a otra ventana (se
+  pinta de naranja): al soltar cae ahí, como con el ratón. Con el botón **Mosaico** (arriba)
+  tienes hasta 4 ventanas grandes y en vivo a la vez; las ventanas reales también se acomodan
+  lado a lado (para que se lean y se pueda soltar en ellas) y al salir vuelven a como estaban,
+  aunque Jarvis se cierre de golpe.
+- **Escribir:** al tocar un campo de texto aparece un **teclado virtual** (también con el botón
+  Teclado): ñ, acentos (´ y la vocal), Mayús, Borrar sostenido, Enter, Tab, flechas, Copiar y
+  Pegar; arriba dice a qué ventana va y lo último que escribiste. El teclado físico y dictarle a
+  Jarvis ("escribe lofi hip hop") también funcionan.
 - Barra de título: arrastrar mueve el panel; Reducir, Escritorio y X (la X y Salir hay que mantenerlas).
-- Para escribir, díselo a Jarvis ("escribe lofi hip hop"). Salir: botón Salir, decirlo o mantener Esc.
+- Salir: botón Salir, decirlo o mantener Esc.
 
 Todo reacciona a la mano: el anillo del cursor se cierra mientras juntas los dedos y se ilumina
 sobre lo que se puede tocar; cada toque deja una onda. Al agarrar un panel se levanta (sombra); al

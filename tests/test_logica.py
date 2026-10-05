@@ -1011,16 +1011,28 @@ class RealidadAumentada(unittest.TestCase):
     def setUp(self):
         import realidad
         self.R = realidad
-        self.ruedas = []
-        self._orig = (realidad._cursor, realidad._boton_izq, realidad._rueda)
-        realidad._cursor = lambda x, y: None
-        realidad._boton_izq = lambda abajo: None
+        self.ruedas, self.clics, self.escrito, self.teclas = [], [], [], []
+        # Nada de entrada ni ventanas reales: todo lo que tocaría Windows queda anotado
+        self._nombres = ("_cursor", "_boton_izq", "_rueda", "_boton_der", "_subir", "_escribir",
+                         "_tecla", "_dar_foco")
+        self._orig = {n: getattr(realidad, n) for n in self._nombres}
+        realidad._cursor = lambda x, y: self.clics.append(("mover", round(x), round(y)))
+        realidad._boton_izq = lambda abajo: self.clics.append(("abajo" if abajo else "arriba",))
         realidad._rueda = self.ruedas.append
+        realidad._boton_der = lambda: self.clics.append(("derecho",))
+        realidad._subir = lambda h: None
+        realidad._escribir = self.escrito.append
+        realidad._tecla = lambda *t: self.teclas.append(t)
+        realidad._dar_foco = lambda h: True
         self.esc = realidad.Escena({})
         self.esc._armar()
+        self.esc._recapturar = lambda cambios: None
+        self.esc._dimensionar_reales = lambda celdas, area: None
+        self.esc._revisar_campo_de_texto = lambda: None
 
     def tearDown(self):
-        self.R._cursor, self.R._boton_izq, self.R._rueda = self._orig
+        for n, f in self._orig.items():
+            setattr(self.R, n, f)
 
     def _ventana(self):
         e = self.R.Elemento("ventana", "Prueba", 640, 360, 300, 210, self.R._icono(None, 22, "P"), hwnd=1)
@@ -1136,6 +1148,108 @@ class RealidadAumentada(unittest.TestCase):
         self.assertGreater(len(self.ruedas), n)
         self.assertTrue(all(u < 0 for u in self.ruedas[n:]))   # misma dirección que la mano
         self.assertIsNone(self.esc.inercia)                    # y se detuvo sola
+
+    def _usable(self, x=640, y=360):
+        """Una ventana grande y usable con su imagen ya dibujada (zona)."""
+        e = self._ventana()
+        e.cx = e.tcx = x
+        e.cy = e.tcy = y
+        e.escala = e.tescala = 1.6
+        e.zona = (x - 230, y - 120, 460, 260)
+        self.esc._a_pantalla = lambda v, px, py: (px * 2, py * 2)  # panel -> "pantalla real"
+        return e
+
+    def _toque(self, x, y):
+        m = self._mano(x, y)
+        self.esc._presionar("Right", x, y)
+        self.esc._soltar("Right", x, y)
+        return m
+
+    def test_tocar_otra_ventana_grande_la_usa_sin_moverla(self):
+        a = self._usable(400, 300)
+        a.interactiva = True
+        b = self._usable(900, 300)
+        lugar = (b.tcx, b.tcy, b.tescala)
+        self._toque(900, 320)
+        self.assertTrue(b.interactiva and not a.interactiva)
+        self.assertEqual((b.tcx, b.tcy, b.tescala), lugar)          # no se reacomodó
+        self.assertIn(("abajo",), self.clics)                       # y le dio clic ahí mismo
+
+    def test_doble_toque_cae_en_el_mismo_pixel(self):
+        e = self._usable()
+        e.interactiva = True
+        self._toque(600, 350)
+        self._toque(603, 352)   # la mano tiembla un poco
+        movs = [c for c in self.clics if c[0] == "mover"]
+        self.assertEqual(movs[-1], movs[0])    # Windows lo cuenta como doble clic
+
+    def test_arrastrar_hacia_otra_ventana(self):
+        a = self._usable(400, 300)
+        a.interactiva = True
+        b = self._usable(900, 300)
+        m = self._mano(420, 320)
+        self.esc._presionar("Right", 420, 320)
+        m.t0 -= 1                              # mantuvo quieto: agarra
+        self.esc._mover("Right", 420, 320)
+        self.assertTrue(m.raton_abajo)
+        self.esc._mover("Right", 880, 330)     # la mano pasa a la otra ventana
+        self.assertIs(m.destino, b)
+        self.assertEqual(self.clics[-1], ("mover", 1760, 660))
+        self.esc._soltar("Right", 880, 330)
+        self.assertEqual(self.clics[-1], ("arriba",))   # soltó ahí
+
+    def test_teclado_escribe_con_acentos_y_mayusculas(self):
+        e = self._usable()
+        e.interactiva = True
+        self.esc._mostrar_teclado(True)
+        t = self.esc.teclado
+        for clave in ("MAYUS", "h", "ACENTO", "o", "ñ", "ESPACIO", "BORRAR", "ENTER", "COPIAR"):
+            self.esc._pulsar_tecla(t, clave)
+        self.assertEqual("".join(self.escrito), "Hóñ ")
+        self.assertEqual(self.teclas, [("BORRAR",), ("ENTER",), ("CTRL", "C")])
+        self.assertFalse(t.mayus or t.acento)   # se usan una vez
+        self.esc._pulsar_tecla(t, "OCULTAR")
+        self.assertFalse(self.esc._teclado_visible())
+
+    def test_teclas_dentro_del_teclado_y_sin_encimarse(self):
+        w, h = 860, 280
+        teclas = self.R._disposicion_teclado(w, h)
+        claves = [c for _r, c, _e in teclas]
+        for k in ("ñ", "ENTER", "BORRAR", "ESPACIO", "MAYUS", "ACENTO", "OCULTAR", "@"):
+            self.assertIn(k, claves)
+        rects = [r for r, _c, _e in teclas]
+        for i, (x, y, tw, th) in enumerate(rects):
+            self.assertTrue(0 <= x and x + tw <= w and 0 <= y and y + th <= h)
+            for (x2, y2, w2, h2) in rects[i + 1:]:
+                self.assertFalse(x < x2 + w2 and x2 < x + tw and y < y2 + h2 and y2 < y + th)
+
+    def test_mosaico_no_encima_ventanas(self):
+        for i in range(5):
+            e = self._ventana()
+            e.t0 = i
+            e.hwnd = 10 + i
+        self.esc._alternar_mosaico()
+        for _ in range(60):
+            for e in self.esc._ventanas():
+                e.animar(1 / 30)
+        grandes = [e for e in self.esc._ventanas() if e.tescala > 0.9]
+        self.assertEqual(len(grandes), 4)
+        cajas = [e.rect() for e in grandes]
+        for i, (x, y, w, h) in enumerate(cajas):
+            for (x2, y2, w2, h2) in cajas[i + 1:]:
+                self.assertFalse(x < x2 + w2 and x2 < x + w and y < y2 + h2 and y2 < y + h)
+
+    def test_ventanas_vuelven_a_como_estaban(self):
+        import json
+        guardado = self.R.COLOCACIONES
+        self.R.COLOCACIONES = Path(tempfile.mkdtemp()) / "ventanas.json"
+        try:
+            self.R._guardar_colocaciones({123456789: [[0, 1, [0, 0], [0, 0], [0, 0, 10, 10]], "x.exe"]})
+            self.assertTrue(json.loads(self.R.COLOCACIONES.read_text()))
+            self.R.restaurar_pendientes()   # la ventana ya no existe: no pasa nada y se limpia
+            self.assertFalse(self.R.COLOCACIONES.exists())
+        finally:
+            self.R.COLOCACIONES = guardado
 
     def test_captura_cerrada_no_revive(self):
         cap = self.R.Captura(0)
