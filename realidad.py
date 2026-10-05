@@ -275,14 +275,27 @@ def _rect_visible(hwnd):
 
 
 # ---------- Dibujo ----------
+@lru_cache(maxsize=32)
+def _fuente(negrita, tam):
+    # Cargar la fuente del disco en cada texto nuevo costaba varios ms
+    return ImageFont.truetype(FUENTE_NEGRITA if negrita else FUENTE, tam)
+
+
 @lru_cache(maxsize=1024)
 def _texto(texto, tam=18, color=(255, 255, 255), negrita=False, max_ancho=0):
     """Sprite BGRA con el texto (PIL, para que salgan acentos y eñes). Se cachea."""
-    f = ImageFont.truetype(FUENTE_NEGRITA if negrita else FUENTE, tam)
+    f = _fuente(negrita, tam)
     if max_ancho and f.getlength(texto) > max_ancho:
-        while texto and f.getlength(texto + "…") > max_ancho:
-            texto = texto[:-1]
-        texto += "…"
+        # Recorte por búsqueda binaria: quitando letra por letra, un título largo (VS Code,
+        # un navegador) eran decenas de mediciones y cuadros de ~100 ms cada vez que cambiaba
+        lo, hi = 0, len(texto)
+        while lo < hi:
+            medio = (lo + hi + 1) // 2
+            if f.getlength(texto[:medio] + "…") <= max_ancho:
+                lo = medio
+            else:
+                hi = medio - 1
+        texto = texto[:lo] + "…"
     l, t, r, b = f.getbbox(texto or " ")
     img = Image.new("RGBA", (max(1, r - l + 6), max(1, b - t + 6)), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -479,6 +492,20 @@ def _pegar_premult(canvas, sprite, x, y):
     roi = canvas[y0:y1, x0:x1]
     cv2.multiply(roi, inv[y0 - y:y1 - y, x0 - x:x1 - x], dst=roi, scale=1 / 255)
     cv2.add(roi, pre[y0 - y:y1 - y, x0 - x:x1 - x], dst=roi)
+
+
+@lru_cache(maxsize=16)
+def _tabla_gamma(gamma):
+    return np.clip(((np.arange(256) / 255.0) ** gamma) * 255, 0, 255).astype(np.uint8)
+
+
+def _aclarar(img, brillo):
+    """Con poca luz, sube los tonos oscuros (gamma) para que MediaPipe siga viendo las manos y
+    el fondo no se vea negro. brillo: promedio 0-255 de la imagen."""
+    if brillo >= 85:
+        return img
+    gamma = round(max(0.35, min(1.0, math.log(105 / 255) / math.log(max(brillo, 4) / 255))), 2)
+    return cv2.LUT(img, _tabla_gamma(gamma))
 
 
 def _ajustar(img, w, h):
@@ -894,6 +921,8 @@ class Mano:
         self.vx = self.vy = 0.0   # velocidad de la mano (px/s): lanzar ventanas, scroll con inercia
         self.razon = 1.0          # apertura pulgar-índice (para que el anillo "se cierre")
         self.pinza_der, self.t0d = False, 0.0   # pulgar con medio: clic derecho
+        self.t_cand_der = 0.0     # desde cuándo parece un clic derecho (tiene que sostenerse)
+        self.t_suelta = 0.0       # cuándo se soltó el último pellizco normal
         self.tecla = None         # tecla del teclado virtual que se está pulsando
         self.t_rep, self.repitio = 0.0, False   # autorrepetición (Borrar sostenido)
         self.destino = None       # al arrastrar algo: la ventana donde caería
@@ -1106,37 +1135,46 @@ class Escena:
                 continue
             if len(hwnds) >= MAX_VENTANAS:
                 break
-        nuevas = []
+        # Lo lento (títulos, el ícono del programa, arrancar o cerrar capturas: hasta ~1 s con
+        # varias ventanas nuevas) va FUERA del candado. Antes se hacía dentro y el dibujo, que
+        # necesita ese candado, se quedaba esperando: la imagen se congelaba hasta 1 s.
         with self.lock:
             actuales = {e.hwnd: e for e in self._ventanas()}
+        titulos = {h: control._titulo(h) for h in hwnds}
+        nuevas = []
+        for h in hwnds:
+            if h in actuales or self.parar.is_set():
+                continue
+            try:
+                exe = psutil.Process(control._pid_de(h)).exe()
+            except Exception:
+                exe = None
+            e = Elemento("ventana", titulos[h], W / 2, H / 2, 300, 210, _icono(exe, 22, titulos[h][:1]), hwnd=h)
+            e.escala, e.alfa = 0.2, 0.0  # aparece creciendo y haciéndose visible
+            e.captura = Captura(h)
+            e.nivel = False
+            nuevas.append(e)
+        idas = []
+        with self.lock:  # aquí solo se cambia la lista: instantáneo
             for h, e in actuales.items():
                 if h not in hwnds:
-                    if e.captura:
-                        e.captura.cerrar()
-                    self.elementos.remove(e)
+                    if e in self.elementos:
+                        self.elementos.remove(e)
+                    idas.append(e)
                     if e.alfa > 0.1:  # se desvanece encogiéndose en vez de desaparecer de golpe
                         e.talfa, e.tescala, e.agarrado = 0.0, e.escala * 0.55, 0
                         self.salientes.append((e, time.time()))
                 else:
-                    e.titulo = control._titulo(h) or e.titulo
-            for h in hwnds:
-                if h in actuales:
-                    continue
-                titulo = control._titulo(h)
-                try:
-                    exe = psutil.Process(control._pid_de(h)).exe()
-                except Exception:
-                    exe = None
-                e = Elemento("ventana", titulo, W / 2, H / 2, 300, 210, _icono(exe, 22, titulo[:1]), hwnd=h)
-                e.escala, e.alfa = 0.2, 0.0  # aparece creciendo y haciéndose visible
-                e.captura = Captura(h)
-                if self.parar.is_set():
-                    break
-                e.captura.iniciar(rapida=False)
-                e.nivel = False
+                    e.titulo = titulos.get(h) or e.titulo
+            for e in nuevas:
                 self.elementos.insert(0, e)
-                nuevas.append(e)
-        if nuevas or len(actuales) != len(hwnds):
+        for e in idas:
+            if e.captura:
+                e.captura.cerrar()
+        for e in nuevas:
+            if not self.parar.is_set():
+                e.captura.iniciar(rapida=False)
+        if nuevas or idas:
             self._organizar()
         # El puntito de "abierta" del dock: se calcula aquí (cada 1.2 s) y no al dibujar, donde
         # eran 24 consultas a Windows por cuadro (título y proceso de cada ventana x 3 iconos)
@@ -1212,8 +1250,10 @@ class Escena:
         except Exception:
             pass
         self.z_arriba = e.hwnd
-        if not _dar_foco(e.hwnd):  # si Windows no lo permite, el truco de siempre en otro hilo
-            threading.Thread(target=control.traer_al_frente, args=(e.hwnd,), daemon=True).start()
+        def foco():  # en otro hilo: con el foreground de otra app ocupada, no traba la imagen
+            if not _dar_foco(e.hwnd):
+                control.traer_al_frente(e.hwnd)
+        threading.Thread(target=foco, daemon=True, name="realidad-foco").start()
         if organizar:
             self._organizar()
         else:
@@ -1460,6 +1500,7 @@ class Escena:
         m = self.manos[clave]
         e, modo = m.elem, m.modo
         m.elem, m.pinza, m.modo = None, False, None
+        m.t_suelta = time.time()
         m.d0 = m.esc0 = None
         if m.raton_abajo:
             _boton_izq(False)
@@ -1647,8 +1688,11 @@ class Escena:
         e = self._enfocada()
         if e is None:
             return
-        if U32.GetForegroundWindow() != e.hwnd and _dar_foco(e.hwnd):
-            time.sleep(0.03)  # que la ventana termine de tomar el foco antes de la primera letra
+        if U32.GetForegroundWindow() != e.hwnd:
+            h = threading.Thread(target=_dar_foco, args=(e.hwnd,), daemon=True)
+            h.start()
+            h.join(0.25)        # como máximo un cuarto de segundo: la imagen no se traba
+            time.sleep(0.03)    # que la ventana termine de tomar el foco antes de la primera letra
 
     def _pulsar_tecla(self, t, clave):
         t.pulso = 0.5
@@ -1742,10 +1786,19 @@ class Escena:
                     m.vy += ((m.y - py) / dtm - m.vy) * 0.5
             # Pulgar con el dedo MEDIO (y el índice separado) = clic derecho
             razon_medio = float(np.linalg.norm(pts[4] - pts[12])) / tam
-            if not m.pinza and not m.pinza_der and razon_medio < PINZA_DER_ON and razon > 0.5:
-                m.pinza_der, m.t0d = True, ahora
-                self._onda(m.x, m.y, MORADO, 22)
-            elif m.pinza_der:
+            # Estricto: al soltar un pellizco normal el medio suele quedar cerca del pulgar y eso
+            # daba clics derechos sin querer. Tiene que ser con el índice bien abierto, no justo
+            # después de soltar otro pellizco y sostenido un instante.
+            if not m.pinza and not m.pinza_der:
+                if razon_medio < PINZA_DER_ON and razon > 0.6 and ahora - m.t_suelta > 0.5:
+                    m.t_cand_der = m.t_cand_der or ahora
+                    if ahora - m.t_cand_der >= 0.12:
+                        m.pinza_der, m.t0d, m.t_cand_der = True, ahora, 0.0
+                        self._onda(m.x, m.y, MORADO, 22)
+                        continue
+                else:
+                    m.t_cand_der = 0.0
+            if m.pinza_der:
                 if razon_medio > PINZA_DER_OFF:
                     m.pinza_der = False
                     if ahora - m.t0d < 1.5:
@@ -2158,6 +2211,23 @@ class Escena:
         except Exception:
             pass
 
+    def _revisar_camara(self, salud, nuevo, ahora, lector):
+        """Avisa en la pantalla si la cámara dejó de mandar imagen, va lenta o está oscura (y
+        si dejó de mandar, la reabre). Así no parece que el modo se trabó."""
+        if ahora - salud["t"] >= 1.5:
+            self.camara_fps = salud["n"] / (ahora - salud["t"])
+            salud["t"], salud["n"] = ahora, 0
+        if ahora - salud["nuevo"] > 2.5:
+            self._avisar("La cámara dejó de mandar imagen; la estoy reabriendo...", 1.5)
+            if ahora - salud["reabrir"] > 8:
+                salud["reabrir"] = ahora
+                print("[Realidad: la cámara no manda imagen; la reabro]")
+                threading.Thread(target=lector.parar, daemon=True, name="reabrir-camara").start()
+        elif salud["brillo"] < 20:
+            self._avisar("La cámara se ve negra: ¿está tapada o con el obturador cerrado?", 1.5)
+        elif getattr(self, "camara_fps", 30) < 8:
+            self._avisar(f"La cámara va lenta ({self.camara_fps:.0f} fps): necesita más luz", 1.5)
+
     def _esc_mantenida(self, ahora):
         """La capa no tiene el foco (es transparente), así que Esc se lee del teclado global;
         hay que mantenerla 1 s para no salir por un Esc dentro de YouTube."""
@@ -2210,10 +2280,19 @@ class Escena:
             fallos = 0
             ultimo_ts = 0.0
             fondo, t_prev = None, time.time()
+            # Salud de la cámara: con ella tapada o casi sin luz entrega 1 cuadro por segundo
+            # casi negro; la interfaz seguía a 30 fps y parecía TRABADA (fondo congelado, manos
+            # sin responder) sin decir por qué
+            salud = {"t": time.time(), "n": 0, "brillo": 128.0, "nuevo": time.time(), "reabrir": 0.0}
             while not self.parar.is_set():
-                cuadro, ts_cuadro = lector.ultimo(indice)
+                try:
+                    cuadro, ts_cuadro = lector.ultimo(indice)
+                except camara.CamaraError as err:  # antes cerraba todo el modo
+                    cuadro, ts_cuadro = None, ultimo_ts
+                    self._avisar(f"Cámara: {err}", 2)
                 nuevo = cuadro is not None and ts_cuadro != ultimo_ts
                 ahora = time.time()
+                self._revisar_camara(salud, nuevo, ahora, lector)
                 # Se dibuja con cada cuadro de la cámara y, si la cámara va lenta (poca luz: a
                 # veces 1-15 fps), igual cada 1/30 s sobre el último fondo: antes la interfaz
                 # entera (ventanas en vivo, animaciones) iba a los fps de la cámara
@@ -2230,6 +2309,12 @@ class Escena:
                     alto16 = int(cw * 9 / 16)
                     if alto16 < ch:  # recorta a 16:9 por el centro
                         espejo = espejo[(ch - alto16) // 2:(ch - alto16) // 2 + alto16]
+                    salud["n"] += 1
+                    salud["nuevo"] = ahora
+                    if salud["n"] % 6 == 1:  # el brillo cambia despacio: no hace falta medir siempre
+                        salud["brillo"] = 0.6 * salud["brillo"] + 0.4 * float(
+                            cv2.mean(cv2.resize(espejo, (80, 45), interpolation=cv2.INTER_AREA))[1])
+                    espejo = _aclarar(espejo, salud["brillo"])
                     chico = cv2.resize(espejo, (640, 360))
                     imagen = mp.Image(image_format=mp.ImageFormat.SRGB,
                                       data=cv2.cvtColor(chico, cv2.COLOR_BGR2RGB))

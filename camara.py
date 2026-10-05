@@ -89,6 +89,7 @@ class _Lector:
         if not cap.isOpened():
             self.error = f"No pude abrir la cámara número {indice}."
             return
+        cap.set(cv2.CAP_PROP_FPS, 30)  # que no se quede en el modo lento de algunas webcams
         try:
             while not self._parar.is_set():
                 ok, frame = cap.read()

@@ -1251,6 +1251,83 @@ class RealidadAumentada(unittest.TestCase):
         finally:
             self.R.COLOCACIONES = guardado
 
+    # --- cámara con problemas: que se note, no que parezca trabado ---
+    def _salud(self, brillo=128.0, sin_imagen=0.0):
+        ahora = time.time()
+        return {"t": ahora, "n": 30, "brillo": brillo, "nuevo": ahora - sin_imagen, "reabrir": 0.0}
+
+    def test_avisa_si_la_camara_esta_negra(self):
+        self.esc._revisar_camara(self._salud(brillo=3), True, time.time(), None)
+        self.assertIn("negra", self.esc.aviso)
+
+    def test_reabre_la_camara_si_deja_de_mandar_imagen(self):
+        paradas = []
+
+        class Lector:
+            def parar(self):
+                paradas.append(1)
+        self.esc._revisar_camara(self._salud(sin_imagen=3.0), False, time.time(), Lector())
+        time.sleep(0.1)
+        self.assertIn("dejó de mandar", self.esc.aviso)
+        self.assertEqual(paradas, [1])
+
+    def test_avisa_si_la_camara_va_lenta(self):
+        salud = self._salud()
+        salud["t"], salud["n"] = time.time() - 2, 2   # 1 cuadro por segundo
+        self.esc._revisar_camara(salud, True, time.time(), None)
+        self.assertIn("lenta", self.esc.aviso)
+
+    def test_con_buena_camara_no_avisa(self):
+        self.esc._revisar_camara(self._salud(), True, time.time(), None)
+        self.assertEqual(self.esc.aviso, "")
+
+    def test_poca_luz_se_aclara(self):
+        oscura = np.full((36, 64, 3), 30, np.uint8)
+        self.assertGreater(int(self.R._aclarar(oscura, 30).mean()), 80)
+        normal = np.full((36, 64, 3), 120, np.uint8)
+        self.assertIs(self.R._aclarar(normal, 120), normal)   # con luz, ni se toca
+
+    # --- clic derecho: solo a propósito ---
+    def _resultado(self, pulgar_indice, pulgar_medio):
+        """Un resultado de MediaPipe con una mano: distancias relativas al tamaño de la mano."""
+        from types import SimpleNamespace as N
+        pts = [[0.5, 0.5] for _ in range(21)]
+        pts[0], pts[9] = [0.5, 0.7], [0.5, 0.5]          # tamaño de la mano: 0.2
+        pts[4] = [0.45, 0.45]
+        pts[8] = [0.45 + 0.2 * pulgar_indice, 0.45]
+        pts[12] = [0.45, 0.45 + 0.2 * pulgar_medio]
+        return N(hand_landmarks=[[N(x=x, y=y) for x, y in pts]],
+                 handedness=[[N(category_name="Right")]])
+
+    def _manos(self, pi, pm, segundos, paso=1 / 30):
+        t = time.time()
+        fin = t + segundos
+        while t < fin:
+            self.esc._procesar_manos(self._resultado(pi, pm), t)
+            t += paso
+        return t
+
+    def test_soltar_un_pellizco_no_da_clic_derecho(self):
+        derechos = []
+        self.esc._clic_derecho = lambda x, y: derechos.append((x, y))
+        self._manos(0.1, 0.2, 0.3)               # pellizco normal (índice) con el medio cerca
+        self.esc.manos["Right"].t_suelta = time.time()
+        self._manos(0.8, 0.2, 0.3)               # suelta: el índice se abre, el medio sigue cerca
+        self._manos(0.8, 0.9, 0.2)
+        self.assertEqual(derechos, [])
+
+    def test_pulgar_con_medio_sostenido_da_clic_derecho(self):
+        derechos = []
+        self.esc._clic_derecho = lambda x, y: derechos.append((x, y))
+        t = self._manos(0.9, 0.9, 0.2)
+        self.esc.manos["Right"].t_suelta = 0.0
+        hasta = t + 0.3
+        while t < hasta:                          # pulgar con medio, índice abierto, 0.3 s
+            self.esc._procesar_manos(self._resultado(0.9, 0.1), t)
+            t += 1 / 30
+        self.esc._procesar_manos(self._resultado(0.9, 0.9), t)   # y lo suelta
+        self.assertEqual(len(derechos), 1)
+
     def test_captura_cerrada_no_revive(self):
         cap = self.R.Captura(0)
         cap.cerrar()
