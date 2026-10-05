@@ -13,7 +13,8 @@
 > con la cámara), `realidad.py` (modo realidad aumentada con las manos), `acciones.py` +
 > `avatares.py` (el personaje animado del HUD según la acción; GIF en Documentos\Jarvis\Avatares) y `descargas.py` (el HUD muestra las descargas), `cognicion.py`
 > (cuánto y cómo pensar, calcular y fechas exactas, aprender del usuario) y `preferencias.py`
-> (navegador, música y apps preferidas, e instrucciones permanentes).
+> (navegador, música y apps preferidas, e instrucciones permanentes) e `interaccion.py` (elegir
+> lo que se ve en pantalla, controlar el video o la música, saltar anuncios, escribir en campos).
 
 # Genesis
 

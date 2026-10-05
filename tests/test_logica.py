@@ -258,6 +258,14 @@ class Voz(unittest.TestCase):
     def test_limpia_simbolos(self):
         self.assertEqual(voz._limpiar("**Hola** mundo `x`"), "Hola mundo x")
 
+    def test_frase_sin_nada_que_decir_no_tumba_a_edge(self):
+        antes = dict(voz._fallos)
+        clip = voz._Clip("...")
+        voz._generar(clip, voz_natural=False)
+        self.assertEqual(list(clip.trozos(limite=1)), [])
+        self.assertIsNone(clip.error)
+        self.assertEqual(voz._fallos, antes)   # ningún motor "falló"
+
     def test_locucion_en_orden_y_se_puede_cortar(self):
         dichas = []
 
@@ -896,6 +904,105 @@ class Avatares(unittest.TestCase):
         alto, pies, centro = avatares._medir(avatares.sin_fondo(self._personaje((170, 210, 245))))
         self.assertGreater(alto, 90)          # cabeza a cuerpo (unidos), no el objeto de 30 px
         self.assertAlmostEqual(centro, 60, delta=6)
+
+
+class InteraccionConPantalla(unittest.TestCase):
+    """Elegir lo que se ve ("el primer video", "la segunda playlist") y controlar el video."""
+
+    def setUp(self):
+        import interaccion
+        self.I = interaccion
+
+    def _cosa(self, nombre, url, x, y, visible=True, host="www.youtube.com"):
+        c = self.I.Cosa(None, nombre, "Hyperlink", (x, y, x + 300, y + 170), url)
+        c.clase = self.I.clasificar(url, nombre, "Hyperlink", host)
+        c.visible = visible
+        return c
+
+    def test_clasifica_por_la_url(self):
+        c = self.I.clasificar
+        yt = "https://www.youtube.com"
+        self.assertEqual(c(yt + "/watch?v=abcdefghijk"), "video")
+        # un video ofrecido "como radio" sigue siendo ese video
+        self.assertEqual(c(yt + "/watch?v=abcdefghijk&list=RDabcdefghijk&start_radio=1", "Canción"), "video")
+        self.assertEqual(c(yt + "/watch?v=C86dq7o5Hpo&list=RDGMEMR48zJN", "Mix: Trap"), "mix")
+        self.assertEqual(c(yt + "/watch?v=abcdefghijk&list=PLx0sYbCqOb8"), "playlist")
+        self.assertEqual(c(yt + "/playlist?list=PLx0sYbCqOb8"), "playlist")
+        self.assertEqual(c(yt + "/shorts/abcdefghijk"), "short")
+        self.assertEqual(c(yt + "/@SadLyrics-Traducciones"), "canal")
+        self.assertEqual(c(yt + "/feed/subscriptions"), "navegacion")
+        self.assertEqual(c("https://open.spotify.com/track/123"), "cancion")
+        self.assertEqual(c("https://open.spotify.com/album/123"), "album")
+        g = "www.google.com"
+        self.assertEqual(c("https://es.wikipedia.org/wiki/Python", "Python", "Hyperlink", g), "resultado")
+        self.assertEqual(c("https://www.google.com/search?q=x&tbm=isch", "Imágenes", "Hyperlink", g), "navegacion")
+        self.assertEqual(c("", "Pausa (k)", "Button"), "boton")
+
+    def test_pedidos_con_varios_tipos(self):
+        self.assertEqual(self.I.clases_pedidas("canción o playlist"),
+                         {"cancion", "video", "playlist", "mix", "album"})
+        self.assertEqual(self.I.clases_pedidas("videos"), {"video"})
+        self.assertIn("video", self.I.clases_pedidas(""))   # sin tipo: lo primero que se vea
+
+    def test_elige_en_orden_de_lectura(self):
+        v = "https://www.youtube.com/watch?v="
+        cosas = self.I.ordenar([
+            self._cosa("Segundo renglón", v + "bbbbbbbbbbb", 20, 400),
+            self._cosa("Mix: Pop", v + "ccccccccccc&list=RDGMEMQ1dJ7w", 700, 120),
+            self._cosa("Primero 3 minutos y 7 segundos", v + "aaaaaaaaaaa", 20, 125),
+            self._cosa("Abajo, sin verse", v + "ddddddddddd", 20, 1900, visible=False),
+        ])
+        e = self.I.escoger
+        clases = self.I.clases_pedidas
+        self.assertEqual(e(cosas, clases("video"), 1).nombre, "Primero 3 minutos y 7 segundos")
+        self.assertEqual(e(cosas, clases("cancion o playlist"), 2).nombre, "Mix: Pop")
+        self.assertEqual(e(cosas, clases("playlist"), 1).nombre, "Mix: Pop")
+        self.assertEqual(e(cosas, clases("video"), -1).nombre, "Segundo renglón")  # el último que se ve
+        self.assertEqual(e(cosas, clases("video"), 3).nombre, "Abajo, sin verse")   # más de los que se ven
+        self.assertIsNone(e(cosas, clases("short"), 1))
+        self.assertEqual(e(cosas, clases("video"), 1, contiene="segundo").nombre, "Segundo renglón")
+        self.assertEqual(self.I.limpio("Primero 3 minutos y 7 segundos"), "Primero")
+
+    def test_miniatura_y_titulo_son_uno(self):
+        url = "https://www.youtube.com/watch?v=aaaaaaaaaaa&pp=xyz"
+        unidos = self.I._unir([self._cosa("", url, 20, 120),
+                               self._cosa("Título completo", url.replace("xyz", "abc"), 20, 300)])
+        self.assertEqual(len(unidos), 1)
+        self.assertEqual(unidos[0].nombre, "Título completo")
+        self.assertEqual(unidos[0].rect[1], 120)   # en el lugar de la miniatura
+
+    def test_boton_omitir_no_confunde_omitir_navegacion(self):
+        o = self.I.OMITIR
+        for nombre in ("Omitir", "Omitir anuncio", "Skip Ad", "Saltar anuncios", "Omitir ›"):
+            self.assertTrue(o.match(nombre), nombre)
+        for nombre in ("Omitir navegación", "Omitir anuncio en 5", "Anuncio"):
+            self.assertFalse(o.match(nombre), nombre)
+
+    def test_atajos_de_reproduccion(self):
+        a = genesis.atajo_medios
+        self.assertEqual(a("pausa"), ("controlar_reproduccion", {"accion": "pausar"}))
+        self.assertEqual(a("Jarvis, salta el anuncio por favor"),
+                         ("controlar_reproduccion", {"accion": "saltar_anuncio"}))
+        self.assertEqual(a("siguiente canción")[1]["accion"], "siguiente")
+        self.assertEqual(a("adelanta 30 segundos")[1], {"accion": "adelantar", "segundos": 30})
+        self.assertEqual(a("regresa un minuto")[1], {"accion": "retroceder", "segundos": 60})
+        self.assertIsNone(a("regresa"))       # eso es "atrás" en el navegador
+        self.assertIsNone(a("abre youtube"))
+        self.assertEqual(genesis.buscar_atajo("¿qué canción es esta?"), "que_suena")
+
+    def test_abrir_y_reproducir_es_de_varios_pasos(self):
+        t = skills._norm("abre youtube y reproduce la primera cancion o playlist que veas")
+        self.assertTrue(genesis.VARIOS_PASOS.search(t))
+        nombres = genesis.elegir_herramientas(t, [])
+        self.assertTrue({"youtube", "elegir_en_pantalla", "controlar_reproduccion"} <= nombres)
+
+    def test_elige_la_sesion_que_corresponde(self):
+        sonando = {"app": "Spotify.exe", "estado": 4, "actual": False}
+        pausada = {"app": "MSEdge", "estado": 5, "actual": True}
+        e = self.I._elegir_sesion
+        self.assertIs(e([pausada, sonando], "pausar"), sonando)    # pausa lo que suena
+        self.assertIs(e([pausada, sonando], "reanudar"), pausada)  # reanuda lo pausado
+        self.assertIsNone(e([], "pausar"))
 
 
 class RealidadAumentada(unittest.TestCase):

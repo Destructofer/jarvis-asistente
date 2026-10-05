@@ -30,14 +30,25 @@ TOKEN_USUARIO_PATH = Path(__file__).parent / "datos" / "spotify_usuario.json"
 
 
 # ---------- YouTube ----------
-def _primer_video(consulta):
-    """ID del primer vídeo real de los resultados (ignora anuncios, shorts y listas)."""
+FILTROS = {"playlist": "EgIQAw%3D%3D", "video": "EgIQAQ%3D%3D", "cancion": "EgIQAQ%3D%3D"}
+
+
+def _videos(consulta):
+    """IDs de los videos reales de los resultados, en orden (sin anuncios, shorts ni listas)."""
     req = Request("https://www.youtube.com/results?search_query=" + quote_plus(consulta),
                   headers={"User-Agent": UA, "Accept-Language": "es-ES,es;q=0.9",
                            "Cookie": "CONSENT=YES+1; SOCS=CAI"})
     html = urlopen(req, timeout=8).read().decode("utf-8", "ignore")
-    m = re.search(r'"videoRenderer":\{"videoId":"([\w-]{11})"', html)
-    return m.group(1) if m else None
+    ids = []
+    for vid in re.findall(r'"videoRenderer":\{"videoId":"([\w-]{11})"', html):
+        if vid not in ids:
+            ids.append(vid)
+    return ids
+
+
+def _primer_video(consulta):
+    ids = _videos(consulta)
+    return ids[0] if ids else None
 
 
 def _abrir(url):
@@ -49,29 +60,86 @@ def _abrir(url):
         webbrowser.open(url)
 
 
+def _abrir_y_elegir(url, tipo, posicion):
+    """Abre la página y elige ahí lo que se ve (interaccion.py): "la primera playlist", "el
+    segundo video que salga en el inicio"..."""
+    import interaccion
+    desde = time.time()
+    _abrir(url)
+    h = interaccion.esperar_youtube(desde)
+    if h is None:
+        return "Abrí YouTube, pero no encontré su ventana para elegir el video."
+    return interaccion.reproducir_en(h, tipo, posicion, espera=12.0)
+
+
 @skill("youtube",
-       "Busca o reproduce algo en YouTube. Con modo 'reproducir' abre directamente el primer vídeo "
-       "que coincide (canciones, videoclips, tutoriales, noticias); con 'resultados' muestra la "
-       "lista de resultados. Sin consulta solo abre YouTube.",
-       {"consulta": {"type": "string", "description": "Qué buscar o reproducir"},
-        "modo": {"type": "string", "enum": ["reproducir", "resultados"],
-                 "description": "reproducir (por defecto) o resultados"}},
+       "Abre YouTube, busca o reproduce. Con consulta y modo 'reproducir' pone directo el video "
+       "(o con tipo=playlist/mix/short, la playlist o mix) número 'posicion' de los resultados. "
+       "SIN consulta: modo 'abrir' solo abre el inicio; modo 'reproducir' abre el inicio y pone "
+       "lo primero que se vea del tipo pedido ('abre YouTube y pon la primera canción o playlist "
+       "que veas'). Con 'resultados' muestra la lista de resultados. Para elegir algo de lo que "
+       "YA está en pantalla ('el tercer video que aparece') usa elegir_en_pantalla.",
+       {"consulta": {"type": "string", "description": "Qué buscar o reproducir (vacío = el inicio de YouTube)"},
+        "modo": {"type": "string", "enum": ["reproducir", "resultados", "abrir"],
+                 "description": "reproducir (por defecto con consulta), resultados, o abrir (por defecto sin consulta)"},
+        "tipo": {"type": "string",
+                 "description": "Qué poner: video (por defecto), cancion, playlist, mix, short, o "
+                                "varios con 'o' ('cancion o playlist')"},
+        "posicion": {"type": "integer", "description": "1 = el primero (por defecto), 2 = el segundo..."}},
        requeridos=[])
-def youtube(consulta="", modo="reproducir"):
+def youtube(consulta="", modo="", tipo="", posicion=1):
     consulta = (consulta or "").strip()
+    modo = (modo or ("reproducir" if consulta else "abrir")).strip().lower()
+    tipo = (tipo or "").strip().lower()
+    try:
+        posicion = max(-50, min(50, int(posicion or 1))) or 1
+    except (TypeError, ValueError):
+        posicion = 1
+    eligiendo = bool(tipo) or posicion != 1
+    if not consulta and eligiendo and modo != "abrir":
+        # "El tercer video que aparece" con YouTube ya al frente: se elige ahí, sin otra pestaña
+        import interaccion
+        h = _youtube_al_frente()
+        if h is not None:
+            return interaccion.reproducir_en(h, tipo or "cualquiera", posicion, espera=6.0)
+    if modo == "resultados" and eligiendo:
+        modo = "reproducir"   # pidió "la segunda playlist de...": hay que ponerla, no solo mostrarla
     if not consulta:
+        if modo == "reproducir" or tipo:
+            return _abrir_y_elegir("https://www.youtube.com", tipo or "cualquiera", posicion)
         _abrir("https://www.youtube.com")
         return "Abriendo YouTube."
-    if modo != "resultados":
-        try:
-            vid = _primer_video(consulta)
-        except (URLError, OSError):
-            vid = None
-        if vid:
-            _abrir(f"https://www.youtube.com/watch?v={vid}")
-            return f"Reproduciendo en YouTube: {consulta}."
-    _abrir("https://www.youtube.com/results?search_query=" + quote_plus(consulta))
+    resultados = "https://www.youtube.com/results?search_query=" + quote_plus(consulta)
+    if modo == "resultados":
+        _abrir(resultados)
+        return f"Mostrando en YouTube los resultados de: {consulta}."
+    if tipo and not re.fullmatch(r"(video|videos|cancion|canciones|tema|rola)?", _sin_acentos(tipo)):
+        # playlist, mix, short...: se elige en la página de resultados (filtrada si se puede)
+        filtro = FILTROS.get(_sin_acentos(tipo))
+        return _abrir_y_elegir(resultados + (f"&sp={filtro}" if filtro else ""), tipo, posicion)
+    try:
+        ids = _videos(consulta)
+    except (URLError, OSError):
+        ids = []
+    i = posicion - 1 if posicion > 0 else posicion
+    if ids and -len(ids) <= i < len(ids):
+        _abrir(f"https://www.youtube.com/watch?v={ids[i]}")
+        return f"Reproduciendo en YouTube: {consulta}."
+    if ids or posicion != 1:
+        return _abrir_y_elegir(resultados, "video", posicion)
+    _abrir(resultados)
     return f"Mostrando en YouTube los resultados de: {consulta}."
+
+
+def _youtube_al_frente():
+    import control
+    h = control.ventana_activa()
+    return h if h and "youtube" in control._titulo(h).lower() else None
+
+
+def _sin_acentos(t):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", t) if unicodedata.category(c) != "Mn")
 
 
 # ---------- Spotify ----------

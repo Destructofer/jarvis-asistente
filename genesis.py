@@ -24,6 +24,7 @@ import expositor
 import gestos  # manos por la cámara de la PC, estilo Iron Man (MediaPipe, local)
 import graph  # noqa: F401  (registra las skills de lectura de archivos de Teams)
 import hud
+import interaccion  # elegir lo que se ve (el primer video...), controlar el video, anuncios
 import mantenimiento
 import memoria
 import multimedia  # noqa: F401  (registra las skills youtube y spotify)
@@ -163,8 +164,9 @@ PROMETE = re.compile(
 # responder con el primer resultado, para que el modelo pueda seguir con el siguiente paso.
 VARIOS_PASOS = re.compile(
     r"\b(luego|despues|y entonces|y (?:da|dale|haz|pica|picale|presiona|escribe|abre|busca|"
-    r"cambia|ve|entra|cierra|pon|inicia|mira|lee|selecciona|resume|resumelo|analiza|"
-    r"analizalo|guarda|guardalo|crea|anota|descomprime))\b")
+    r"cambia|ve|entra|cierra|pon|ponme|ponle|inicia|mira|lee|selecciona|resume|resumelo|analiza|"
+    r"analizalo|guarda|guardalo|crea|anota|descomprime|reproduce|reproducelo|reproducela|elige|"
+    r"escoge|toca|salta|saltate|omite|adelanta|pausa|activa|quita))\b")
 
 # Órdenes simples que se ejecutan sin pasar por el modelo. Tienen que ser la frase COMPLETA
 # (sin "por favor", "Jarvis", etc.): antes bastaba con que la frase CONTUVIERA el texto y
@@ -181,6 +183,9 @@ ATAJOS = {
     "bloquear_pantalla": {"bloquea la pantalla", "bloquear pantalla", "bloquea el equipo",
                           "bloquea la computadora", "bloquea la compu"},
     "cancelar_apagado": {"cancela el apagado", "cancelar apagado", "cancela el reinicio"},
+    "que_suena": {"que cancion es esta", "que cancion es", "que cancion suena", "que suena",
+                  "que esta sonando", "como se llama esta cancion", "como se llama la cancion",
+                  "que video es este", "que estoy escuchando", "que cancion esta sonando"},
 }
 PREFIJOS = re.compile(r"^(?:dime|me dices|sabes|puedes decirme|me puedes decir|podrias decirme)\s+")
 
@@ -277,7 +282,16 @@ GRUPOS = [
       "conectar_archivos_teams", "teams_listar_clases", "teams_buscar_archivos_clase",
       "teams_analizar_tarea"]),
     (r"musica|cancion|spotify|youtube|video|reproduc|pausa|playlist|album|artista|pon algo",
-     ["musica", "spotify", "youtube", "conectar_spotify"]),
+     ["musica", "spotify", "youtube", "conectar_spotify", "controlar_reproduccion",
+      "elegir_en_pantalla"]),
+    # Usar lo que se ve en pantalla (interaccion.py): "el primero", "la segunda playlist",
+    # controlar el video, anuncios, escribir en el buscador o en un chat
+    (r"primer|segund|tercer|cuart|quint|ultim|resultado|lo que veas|lo que sale|que hay|que sale|"
+     r"que me sale|anuncio|publicidad|omit|saltat|pausa|reanuda|siguiente|anterior|adelanta|"
+     r"retrocede|atrasa|rebobina|pantalla completa|subtitulo|modo cine|velocidad|reproduc|"
+     r"playlist|\bmix|cancion|\bshorts?\b|buscador|en el chat|en el campo|escribe en|busca en",
+     ["elegir_en_pantalla", "listar_en_pantalla", "controlar_reproduccion", "saltar_anuncios",
+      "escribir_en", "que_suena"]),
     (r"recuerd|recordatorio|temporizador|alarma|aviso|avisame|minutos|olvida|memoria|anota|guarda|sabes de mi",
      ["temporizador", "recordatorio", "listar_avisos", "cancelar_avisos", "recordar",
       "consultar_memoria", "olvidar", "olvidar_todo"]),
@@ -722,6 +736,76 @@ def atajo_realidad(texto):
     if REALIDAD_ON.search(t):
         return "modo_realidad", {"activar": True}
     return None
+
+
+# Controlar el video o la música al instante, sin pasar por el modelo (frase completa)
+MEDIOS = {
+    "pausar": {"pausa", "pausalo", "pausala", "pon pausa", "ponle pausa", "pausa el video",
+               "pausa la musica", "pausa la cancion", "pausa youtube", "deten el video",
+               "deten la musica", "deten la cancion", "para el video", "para la musica",
+               "para la cancion", "detenlo"},
+    "reanudar": {"reanuda", "reanudalo", "reanudala", "reanuda el video", "reanuda la musica",
+                 "continua el video", "sigue el video", "quita la pausa", "quitale la pausa",
+                 "dale play", "play", "reanuda la cancion"},
+    "siguiente": {"siguiente cancion", "la siguiente cancion", "siguiente video", "el siguiente video",
+                  "pasa la cancion", "cambia la cancion", "cambia de cancion", "salta la cancion",
+                  "saltate la cancion", "otra cancion", "pon la siguiente cancion", "next",
+                  "siguiente tema", "pon el siguiente video", "salta el video", "saltate el video"},
+    "anterior": {"cancion anterior", "la cancion anterior", "video anterior", "el video anterior",
+                 "regresa a la cancion anterior", "pon la cancion anterior", "pon el video anterior"},
+    "saltar_anuncio": {"salta el anuncio", "saltate el anuncio", "salta los anuncios",
+                       "omite el anuncio", "quita el anuncio", "salta la publicidad",
+                       "omite la publicidad", "quita la publicidad", "salta anuncio",
+                       "saltate los anuncios", "omite los anuncios", "skip ad", "omitir anuncio"},
+    "pantalla_completa": {"pantalla completa", "pon pantalla completa", "ponlo en pantalla completa",
+                          "pon el video en pantalla completa", "video en pantalla completa"},
+    "salir_pantalla_completa": {"quita la pantalla completa", "sal de pantalla completa",
+                                "sal de la pantalla completa", "quitale la pantalla completa"},
+    "silenciar": {"silencia el video", "mutea el video", "quitale el sonido al video"},
+    "subtitulos": {"pon subtitulos", "ponle subtitulos", "activa los subtitulos",
+                   "quita los subtitulos", "quitale los subtitulos", "subtitulos"},
+    "reiniciar": {"ponlo desde el principio", "reinicia el video", "desde el principio",
+                  "pon el video desde el principio", "otra vez desde el inicio"},
+}
+SALTO = re.compile(r"^(adelanta|adelantale|avanza|retrocede|regresa|regresale|atrasa|atrasale|"
+                   r"rebobina)(?: el video| la cancion| el tema)?"
+                   r"(?: (\d+|un|una|medio|[a-z]+) (segundos?|minutos?))?$")
+
+
+QUE_HAY = re.compile(r"^(?:que|cuales) (videos|canciones|playlists|listas|mix|mixes|resultados|"
+                     r"shorts|opciones|cosas) (?:hay|me salen|salen|ves|aparecen|tengo)"
+                     r"(?: en (?:la |esta )?(?:pantalla|pagina|youtube)| aqui| ahi)?$")
+
+
+def atajo_medios(texto):
+    """(skill, args) si es una orden corta de reproducción ("pausa", "siguiente canción",
+    "salta el anuncio", "adelanta 30 segundos"); si no, None."""
+    t = _limpia_orden(texto)
+    m = QUE_HAY.match(t)
+    if m:  # "¿qué videos hay?": la lista, al instante y para el oído
+        tipo = {"canciones": "cancion", "listas": "playlist", "mixes": "mix", "opciones": "cualquiera",
+                "cosas": "cualquiera"}.get(m.group(1), m.group(1))
+        return "listar_en_pantalla", {"tipo": tipo, "maximo": 5, "para_voz": True}
+    for accion, frases in MEDIOS.items():
+        if t in frases:
+            return "controlar_reproduccion", {"accion": accion}
+    m = SALTO.match(t)
+    if not m:
+        return None
+    verbo, cantidad, unidad = m.groups()
+    objeto = " el video" in t or " la cancion" in t or " el tema" in t
+    if verbo.startswith(("regresa", "atrasa", "retrocede", "rebobina")) and not (cantidad or objeto):
+        return None  # "regresa" a secas es volver atrás en el navegador, no en el video
+    if cantidad:
+        n = 30 if cantidad == "medio" else 1 if cantidad in ("un", "una") else (
+            int(cantidad) if cantidad.isdigit() else NUMEROS.get(cantidad))
+        if n is None:
+            return None
+        segundos = n * (60 if unidad.startswith("minuto") else 1)
+    else:
+        segundos = 10
+    accion = "adelantar" if verbo.startswith(("adelanta", "avanza")) else "retroceder"
+    return "controlar_reproduccion", {"accion": accion, "segundos": segundos}
 
 
 def atajo_presentacion(texto):
@@ -1318,6 +1402,16 @@ GUIAS = {
     "recordatorio": "Si pide que le avises o le recuerdes algo en un tiempo o a una hora "
                     "('recuérdame en 10 minutos...', 'avísame a las 5'), usa recordatorio o "
                     "temporizador; recordar es solo para guardar un dato sobre él.",
+    "elegir_en_pantalla": "Lo que YA está en pantalla ('el tercer video que aparece', 'pon el cuarto', "
+                          "'la primera playlist', 'abre el primer resultado'): elegir_en_pantalla, NO "
+                          "youtube. '¿Qué videos/playlists/resultados hay?': listar_en_pantalla (no "
+                          "leer_ventana). Usa youtube solo para abrir YouTube o buscar algo nuevo; para "
+                          "'abre YouTube y pon lo primero que veas' basta youtube con modo reproducir, "
+                          "tipo y posicion. Nunca digas que no puedes elegir de la pantalla.",
+    "controlar_reproduccion": "Para pausar, reanudar, siguiente, anterior, adelantar, pantalla "
+                              "completa, subtítulos o saltar un anuncio usa controlar_reproduccion.",
+    "escribir_en": "Para escribir en un buscador, chat o campo de la ventana usa escribir_en "
+                   "(no hace falta dar clic antes).",
     "calendario": "Si la pregunta es de fechas (qué día cae, cuántos días faltan, qué fecha será), "
                   "usa calendario; nunca lo calcules de memoria.",
 }
@@ -1611,7 +1705,8 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
     reply = None
     try:
         # Atajos: órdenes simples sin pasar por el modelo
-        rapido = atajo_presentacion(user) or atajo_sistema(user) or atajo_realidad(user)
+        rapido = (atajo_presentacion(user) or atajo_sistema(user) or atajo_realidad(user)
+                  or atajo_medios(user))
         if rapido:
             reply = ejecutar_herramienta(cfg, *rapido)
             _entregar(cfg, turno, reply, [rapido[0]])
@@ -1736,6 +1831,7 @@ def main(persistente=False):
     avatares.iniciar()   # prepara los GIF nuevos y vigila la carpeta de avatares
     hud.iniciar(cfg)
     descargas.iniciar(cfg)
+    interaccion.iniciar()  # omite solos los anuncios de YouTube que se pueden omitir
 
     # Las rutinas y el modo expositor hablan y ejecutan pasos a través de las mismas funciones
     # que una orden normal (mismas confirmaciones, misma salida de audio)

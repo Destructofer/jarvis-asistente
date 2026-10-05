@@ -309,6 +309,30 @@ largos se analizan por partes. Todo en `documentos.py`.
 
 En `entorno.py`. Usa la misma fuente de cámara que "¿qué ves?" (`camara.fuente`).
 
+## Usar páginas y apps como tú (`interaccion.py`)
+
+Jarvis ve lo que hay en la ventana **en el orden en que tú lo ves** y sabe qué es cada cosa:
+
+- "Abre YouTube y pon la primera canción o playlist que veas" · "pon la segunda playlist de
+  música para estudiar" · "reproduce el tercer video que aparece" · "pon el mix de trap que sale ahí".
+- "Abre el primer resultado" (en Google, Bing...) · "¿qué videos hay?" (te los dice numerados)
+  y luego "pon el cuarto".
+- "Busca rock en español en esta página" · "escribe hola en el chat": escribe en el buscador o
+  campo sin tener que darle clic.
+- Al instante, sin pasar por el modelo: "pausa", "reanuda", "siguiente canción", "canción
+  anterior", "adelanta 30 segundos", "regresa un minuto", "pantalla completa", "pon subtítulos",
+  "salta el anuncio" y "¿qué canción es esta?".
+- **Anuncios:** los de YouTube que se pueden omitir se omiten solos en cuanto aparece el botón
+  ("ya no quites los anuncios" lo apaga; queda guardado en `datos/interaccion.json`).
+
+Cómo: por accesibilidad (UI Automation) cada enlace de Chrome, Edge u Opera trae su URL real,
+así que se distingue con certeza un video, una playlist, un mix, un short, un canal o un
+resultado de búsqueda; la posición en pantalla da el orden. Pausar, siguiente, anterior y
+adelantar usan los **controles multimedia de Windows** (el panel que sale al subir el volumen):
+funcionan con YouTube, Spotify o cualquier reproductor, sin el foco ni el ratón, aunque YouTube
+haya escondido sus controles. Pantalla completa, subtítulos y velocidad usan los atajos de
+YouTube. Lo peligroso (comprar, borrar, enviar...) se confirma antes de pulsarlo.
+
 ## Modo realidad aumentada (tipo Vision Pro)
 
 "Jarvis, activa el modo realidad aumentada": la pantalla completa se vuelve la webcam y encima

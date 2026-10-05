@@ -68,5 +68,9 @@ mediapipe==1.0.1          # gestos de la mano, si estás frente a la PC y la rea
 openpyxl==3.1.5            # leer hojas de Excel (.xlsx) para resumirlas (documentos.py)
 windows-capture==2.0.1     # ver las ventanas en vivo en el modo realidad aumentada (realidad.py)
 pycaw==20260927            # saber si suena algo en la PC (un video): que Jarvis no le conteste
+winrt-runtime==3.2.1                    # controles multimedia de Windows: pausar, siguiente,
+winrt-Windows.Foundation==3.2.1         # adelantar y "¿qué canción es esta?" en YouTube,
+winrt-Windows.Foundation.Collections==3.2.1  # Spotify o cualquier reproductor (interaccion.py)
+winrt-Windows.Media.Control==3.2.1
 
 # Opcional: Whisper en la GPU NVIDIA (mucho más rápido) → pip install -r requirements-gpu.txt

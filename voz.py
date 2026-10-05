@@ -533,6 +533,13 @@ class _Clip:
 def _generar(clip, voz_natural, guardar=False, forzado=None):
     """Llena el clip: caché → motores en orden. Si un motor falla ANTES de dar audio se prueba
     el siguiente; si falla a media frase (streaming), la frase se corta ahí."""
+    if not re.search(r"\w", clip.frase or ""):
+        # Solo "..." o signos: ningún motor tiene nada que decir. Antes Edge y Piper "fallaban"
+        # con eso y, a los dos fallos, Edge quedaba apartado 30 s (frases reales con la voz de
+        # respaldo)
+        clip.motor = "nada"
+        clip.terminar()
+        return
     motor_pref, clave = _clave_cache(clip.frase, voz_natural, forzado)
     pcm = _leer_cache(clave)
     if pcm is not None:
