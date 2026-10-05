@@ -926,6 +926,7 @@ class Mano:
         self.tecla = None         # tecla del teclado virtual que se está pulsando
         self.t_rep, self.repitio = 0.0, False   # autorrepetición (Borrar sostenido)
         self.destino = None       # al arrastrar algo: la ventana donde caería
+        self.t_zona = 0.0         # desde cuándo está sobre "Llevar al escritorio" (hay que sostenerlo)
 
 
 class Escena:
@@ -1300,9 +1301,9 @@ class Escena:
                 self._avisar(str(err), 4)
         threading.Thread(target=lanzar, daemon=True).start()
 
-    def _llevar_al_escritorio(self, e):
+    def _llevar_al_escritorio(self, e, como="botón Escritorio"):
         self.al_salir = e.hwnd
-        self.motivo = "llevar ventana al escritorio"
+        self.motivo = f"llevar ventana al escritorio ({como}: {e.titulo[:40]})"
         self.parar.set()
 
     def _al_tocar(self, e, x, y):
@@ -1316,7 +1317,7 @@ class Escena:
             if boton == "Reducir":
                 self._reducir(e)
             elif boton == "Escritorio":
-                self._llevar_al_escritorio(e)
+                pass  # se maneja en _soltar: hay que mantenerlo
             elif boton == "Cerrar":
                 self._cerrar_ventana(e)
             elif not e.interactiva:
@@ -1439,6 +1440,10 @@ class Escena:
             e.tcy = e.casa[1] + (hy - e.casa[1]) * 0.4
         else:
             e.tcx, e.tcy = x + m.off[0], y + m.off[1]
+            if e.tipo == "ventana" and self._en_zona_escritorio(x, y):
+                m.t_zona = m.t_zona or time.time()
+            else:
+                m.t_zona = 0.0
 
     def _mover_contenido(self, m, e, x, y):
         quieto = math.dist(m.p0, (x, y)) < 14
@@ -1560,7 +1565,16 @@ class Escena:
         if e.tipo == "teclado":  # se movió el teclado: se queda donde lo dejaste
             e.casa = (e.tcx, e.tcy)
             return
-        if m.boton:  # Reducir / Escritorio: un toque, aunque la mano se haya movido un poco
+        if m.boton == "Escritorio":
+            # Sale del modo: un pellizco accidental arriba (donde suele estar la mano) lo
+            # cerraba solo. Hay que mantenerlo, como la X y Salir.
+            if time.time() - m.t0 >= MANTENER_SALIR and _dentro(e.botones.get("Escritorio"), x, y):
+                self._onda(x, y, CIAN_FUERTE, 40)
+                self._llevar_al_escritorio(e, "botón Escritorio")
+            else:
+                self._avisar("Mantén el pellizco sobre Escritorio para salir con esa ventana")
+            return
+        if m.boton:  # Reducir: un toque, aunque la mano se haya movido un poco
             if _dentro(e.botones.get(m.boton), x, y):
                 self._onda(x, y, CIAN_FUERTE, 40)
                 self._al_tocar(e, x, y)
@@ -1569,7 +1583,12 @@ class Escena:
             self._onda(x, y, CIAN_FUERTE, 46)
             self._al_tocar(e, x, y)
         elif e.tipo == "ventana" and self._en_zona_escritorio(x, y):
-            self._llevar_al_escritorio(e)
+            if m.t_zona and time.time() - m.t_zona >= MANTENER_SALIR:
+                self._llevar_al_escritorio(e, "ventana soltada en Llevar al escritorio")
+            else:
+                self._avisar("Déjala un momento sobre la zona para llevarla al escritorio")
+                self._lanzar(e)
+            m.t_zona = 0.0
         elif e.tipo == "ventana" and not e.agarrado:
             self._lanzar(e)
 
@@ -2127,7 +2146,10 @@ class Escena:
                 elif m.modo == "contenido" and not m.desplazando:  # cargando el "mantener"
                     avance = min(1.0, (ahora - m.t0) / ESPERA_ARRASTRE)
                     cv2.ellipse(c, p, (24, 24), -90, 0, int(360 * avance), NARANJA, 3, cv2.LINE_AA)
-                elif m.elem is not None and (m.elem.tipo == "accion" or m.boton == "Cerrar"):  # cargando Salir / X
+                elif m.t_zona:  # sobre "Llevar al escritorio": cuánto falta
+                    avance = min(1.0, (ahora - m.t_zona) / MANTENER_SALIR)
+                    cv2.ellipse(c, p, (24, 24), -90, 0, int(360 * avance), CIAN_FUERTE, 3, cv2.LINE_AA)
+                elif m.elem is not None and ((m.elem.tipo == "accion" and m.elem.mantener) or m.boton in ("Cerrar", "Escritorio")):
                     avance = min(1.0, (ahora - m.t0) / MANTENER_SALIR)
                     cv2.ellipse(c, p, (24, 24), -90, 0, int(360 * avance), ROJO, 3, cv2.LINE_AA)
             else:
@@ -2266,7 +2288,8 @@ class Escena:
             opciones = mpv.HandLandmarkerOptions(
                 base_options=mpp.BaseOptions(model_asset_path=str(MODELO)),
                 running_mode=mpv.RunningMode.LIVE_STREAM, num_hands=2, result_callback=al_detectar,
-                min_hand_detection_confidence=0.55, min_tracking_confidence=0.5)
+                min_hand_detection_confidence=0.6, min_hand_presence_confidence=0.55,
+                min_tracking_confidence=0.5)  # menos manos "fantasma" (pellizcos que nadie hizo)
             detector = mpv.HandLandmarker.create_from_options(opciones)
             self._armar()
             self.hilo_v = threading.Thread(target=self._hilo_ventanas, daemon=True, name="realidad-ventanas")

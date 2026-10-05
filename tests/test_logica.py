@@ -8,6 +8,7 @@ cerraba, confirmaciones en cadena, fallos de rutina mal detectados...) para que 
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -906,6 +907,86 @@ class Avatares(unittest.TestCase):
         self.assertAlmostEqual(centro, 60, delta=6)
 
 
+class LectorDeCamara(unittest.TestCase):
+    """La cámara que se cae, se bloquea o la toma otra app vuelve sola (antes gestos, presencia
+    y la realidad aumentada se quedaban "trabados" hasta reiniciar Jarvis)."""
+
+    def setUp(self):
+        import cv2
+        import camara
+        self.cv2, self.camara = cv2, camara
+        self._orig = cv2.VideoCapture
+        self.aperturas = []
+
+    def tearDown(self):
+        self.cv2.VideoCapture = self._orig
+
+    def _camara_falsa(self, comportamiento):
+        prueba = self
+
+        class Falsa:
+            def __init__(self, *a):
+                self.n = len(prueba.aperturas)
+                prueba.aperturas.append(self)
+                self.lecturas = 0
+
+            def isOpened(self):
+                return True
+
+            def set(self, *a):
+                return True
+
+            def read(self):
+                self.lecturas += 1
+                return comportamiento(self)
+
+            def release(self):
+                pass
+        self.cv2.VideoCapture = Falsa
+
+    def _esperar_imagen_nueva(self, lector, desde, limite=12.0):
+        fin = time.time() + limite
+        while time.time() < fin:
+            cuadro, ts = lector.ultimo(0)
+            if cuadro is not None and ts > desde:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_se_reabre_si_deja_de_dar_imagen(self):
+        cuadro = np.zeros((4, 4, 3), np.uint8)
+
+        def comp(cam):  # la primera cámara da 5 cuadros y luego nada; la segunda funciona
+            time.sleep(0.02)
+            return (True, cuadro) if (cam.n > 0 or cam.lecturas <= 5) else (False, None)
+        self._camara_falsa(comp)
+        lector = self.camara._Lector()
+        self.assertTrue(self._esperar_imagen_nueva(lector, 0))
+        t = time.time()
+        self.assertTrue(self._esperar_imagen_nueva(lector, t + 0.5))
+        self.assertGreaterEqual(len(self.aperturas), 2)
+        lector.parar()
+
+    def test_lectura_bloqueada_se_abandona(self):
+        cuadro = np.zeros((4, 4, 3), np.uint8)
+        bloqueo = threading.Event()
+
+        def comp(cam):  # la primera se cuelga en la lectura (como cuando otra app la toma)
+            if cam.n == 0 and cam.lecturas > 3:
+                bloqueo.wait(30)
+                return False, None
+            time.sleep(0.02)
+            return True, cuadro
+        self._camara_falsa(comp)
+        lector = self.camara._Lector()
+        self.assertTrue(self._esperar_imagen_nueva(lector, 0))
+        t = time.time()
+        self.assertTrue(self._esperar_imagen_nueva(lector, t + 0.5))
+        self.assertGreaterEqual(len(self.aperturas), 2)
+        bloqueo.set()
+        lector.parar()
+
+
 class InteraccionConPantalla(unittest.TestCase):
     """Elegir lo que se ve ("el primer video", "la segunda playlist") y controlar el video."""
 
@@ -989,6 +1070,25 @@ class InteraccionConPantalla(unittest.TestCase):
         self.assertIsNone(a("regresa"))       # eso es "atrás" en el navegador
         self.assertIsNone(a("abre youtube"))
         self.assertEqual(genesis.buscar_atajo("¿qué canción es esta?"), "que_suena")
+
+    def test_sin_llamarlo_no_contesta_platica_ajena(self):
+        cfg = genesis.load_config() if (Path(genesis.__file__).parent / "config.json").exists() else {}
+        orig = (genesis.cerebro.nube_disponible, genesis.escuchar.frase_de_la_pc)
+        try:
+            genesis.escuchar.frase_de_la_pc = lambda minimo=0.5: False
+            genesis.cerebro.nube_disponible = lambda c: True
+            self.assertTrue(genesis._no_es_para_mi(cfg, "Sí, sí."))             # corta, no pide nada
+            self.assertEqual(genesis._no_es_para_mi(cfg, "pausa"), "")           # atajo: sí es para él
+            self.assertEqual(genesis._no_es_para_mi(cfg, "muchas gracias"), "")  # cierra la plática
+            largo = "uno es más sintético que el otro, dejas de hacer cosas"
+            self.assertEqual(genesis._no_es_para_mi(cfg, largo), "")             # con nube decide el modelo
+            genesis.cerebro.nube_disponible = lambda c: False
+            self.assertTrue(genesis._no_es_para_mi(cfg, largo))                  # sin nube: callado
+            genesis.cerebro.nube_disponible = lambda c: True
+            genesis.escuchar.frase_de_la_pc = lambda minimo=0.5: True
+            self.assertTrue(genesis._no_es_para_mi(cfg, largo))                  # sonaba la PC
+        finally:
+            genesis.cerebro.nube_disponible, genesis.escuchar.frase_de_la_pc = orig
 
     def test_abrir_y_reproducir_es_de_varios_pasos(self):
         t = skills._norm("abre youtube y reproduce la primera cancion o playlist que veas")
@@ -1250,6 +1350,48 @@ class RealidadAumentada(unittest.TestCase):
             self.assertFalse(self.R.COLOCACIONES.exists())
         finally:
             self.R.COLOCACIONES = guardado
+
+    # --- salir del modo solo a propósito ---
+    def test_toque_rapido_en_escritorio_no_saca_del_modo(self):
+        e = self._usable()
+        e.interactiva = True
+        e.botones = {"Escritorio": (700, 200, 90, 24)}
+        self._mano(740, 212)
+        self.esc._presionar("Right", 740, 212)
+        self.esc._soltar("Right", 740, 212)
+        self.assertFalse(self.esc.parar.is_set())
+        self.assertIn("Mantén", self.esc.aviso)
+
+    def test_escritorio_sostenido_si_saca_del_modo(self):
+        e = self._usable()
+        e.interactiva = True
+        e.botones = {"Escritorio": (700, 200, 90, 24)}
+        m = self._mano(740, 212)
+        self.esc._presionar("Right", 740, 212)
+        m.t0 -= 1.0
+        self.esc._soltar("Right", 740, 212)
+        self.assertTrue(self.esc.parar.is_set())
+        self.assertIn("botón Escritorio", self.esc.motivo)
+
+    def test_ventana_soltada_de_pasada_en_la_zona_no_saca_del_modo(self):
+        e = self._ventana()
+        self._correr(20)
+        x, y, w, h = e.rect()
+        m = self._mano(x + w / 2, y + 10)
+        self.esc._presionar("Right", m.x, m.y)
+        zx, zy, zw, zh = self.esc._zona_escritorio()
+        self.esc._mover("Right", zx + zw / 2, zy + zh / 2)
+        self.esc._soltar("Right", zx + zw / 2, zy + zh / 2)   # sin detenerse ahí
+        self.assertFalse(self.esc.parar.is_set())
+        # sosteniéndola un momento sobre la zona, sí
+        self._correr(30)
+        x, y, w, h = e.rect()
+        self.esc._presionar("Right", x + w / 2, y + 10)
+        self.assertIs(m.elem, e)
+        self.esc._mover("Right", zx + zw / 2, zy + zh / 2)
+        m.t_zona -= 1.0
+        self.esc._soltar("Right", zx + zw / 2, zy + zh / 2)
+        self.assertTrue(self.esc.parar.is_set())
 
     # --- cámara con problemas: que se note, no que parezca trabado ---
     def _salud(self, brillo=128.0, sin_imagen=0.0):

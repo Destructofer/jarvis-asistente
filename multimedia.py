@@ -125,10 +125,9 @@ def youtube(consulta="", modo="", tipo="", posicion=1):
     if ids and -len(ids) <= i < len(ids):
         _abrir(f"https://www.youtube.com/watch?v={ids[i]}")
         return f"Reproduciendo en YouTube: {consulta}."
-    if ids or posicion != 1:
-        return _abrir_y_elegir(resultados, "video", posicion)
-    _abrir(resultados)
-    return f"Mostrando en YouTube los resultados de: {consulta}."
+    # Sin la lista (internet lento: el saludo seguro con YouTube llegó a tardar más de 8 s) se
+    # abre la búsqueda y se pone el video desde la pantalla, en vez de solo mostrar resultados
+    return _abrir_y_elegir(resultados, "video", posicion)
 
 
 def _youtube_al_frente():

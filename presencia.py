@@ -197,6 +197,11 @@ def _bucle():
     _presencia = Presencia(_conf(), time.time())
     cada = float(_conf().get("revisar_cada_seg", 0.5))
     while activo():
+        if camara.EXTERNO is not None:
+            # Realidad aumentada activa: la cámara es suya (y te está viendo de frente). Revisar
+            # la cara y mandar vistazos a la IA ahí solo le quitaba tiempo a las manos.
+            time.sleep(1)
+            continue
         try:
             cuadro, _ = camara.cuadro_usuario(_cfg())
         except camara.CamaraError as e:

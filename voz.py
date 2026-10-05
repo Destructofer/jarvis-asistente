@@ -296,7 +296,7 @@ def _edge_trozos(frase):
     async def generar():
         com = edge_tts.Communicate(frase, voz, rate=_CONF.get("edge_velocidad", "+5%"),
                                    pitch=_CONF.get("edge_tono", "+0Hz"),
-                                   connect_timeout=6, receive_timeout=20)
+                                   connect_timeout=4, receive_timeout=10)  # red inestable: a Piper rápido
         async for trozo in com.stream():
             if trozo["type"] == "audio":
                 llegadas.put(trozo["data"])
@@ -339,7 +339,7 @@ def _edge_pcm(frase):
     async def generar():
         com = edge_tts.Communicate(frase, voz, rate=_CONF.get("edge_velocidad", "+5%"),
                                    pitch=_CONF.get("edge_tono", "+0Hz"),
-                                   connect_timeout=6, receive_timeout=20)
+                                   connect_timeout=4, receive_timeout=10)  # red inestable: a Piper rápido
         buf = bytearray()
         async for trozo in com.stream():
             if trozo["type"] == "audio":

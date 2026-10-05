@@ -68,10 +68,29 @@ def _http_persistente(timeout):
     try:
         import httpx2
         from openai import DefaultHttpx2Client
+        timeout = httpx2.Timeout(*_tiempos(timeout)[0:1], connect=_tiempos(timeout)[1])
         return DefaultHttpx2Client(timeout=timeout, limits=httpx2.Limits(
             max_connections=20, max_keepalive_connections=10, keepalive_expiry=50))
     except ImportError:
         return None
+
+
+def _tiempos(timeout):
+    """(sin recibir datos, para conectar) en segundos. Con internet inestable, esperar los 20-25 s
+    configurados por CADA modelo de la nube antes de pasar al local hacía respuestas de 30-45 s.
+    Groq empieza a contestar en 1-2 s y en streaming manda datos seguido: 10 s callado ya es
+    una red caída."""
+    total = float(timeout)
+    return min(total, 10.0), min(total, 4.0)
+
+
+def _timeout_sdk(timeout):
+    try:
+        import httpx
+        lectura, conectar = _tiempos(timeout)
+        return httpx.Timeout(lectura, connect=conectar)
+    except ImportError:
+        return _tiempos(timeout)[0]
 
 
 def conexion_rota(e):
@@ -90,7 +109,7 @@ def cliente(url, clave, timeout=20):
         c = _clientes.get(k)
         if c is None:
             http = _http_persistente(timeout)
-            c = OpenAI(api_key=clave, base_url=url, timeout=timeout, max_retries=0,
+            c = OpenAI(api_key=clave, base_url=url, timeout=_timeout_sdk(timeout), max_retries=0,
                        **({"http_client": http} if http is not None else {}))
             _clientes[k] = c
         return c
@@ -365,6 +384,16 @@ def espera_sugerida(e):
     minutos = int(m.group(1) or 0)
     valor = float(m.group(2))
     return minutos * 60 + (valor / 1000 if m.group(3).lower() == "ms" else valor)
+
+
+def nube_disponible(cfg):
+    """¿Contestaría ahora un modelo de la nube? (hay red y al menos uno no está al límite)."""
+    if cfg.get("modo", "auto") == "offline":
+        return False
+    proveedores = _proveedores(cfg)
+    if not proveedores or not hay_internet(host_de(proveedores[0]["url"])):
+        return False
+    return any(_saturado.get(p["modelo"], 0) <= time.time() for p in proveedores)
 
 
 def chat(cfg, history, tools, temperatura=0.2, al_texto=None, razonamiento=None):

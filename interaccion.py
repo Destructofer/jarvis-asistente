@@ -1004,6 +1004,10 @@ def _bucle_vigia():
         time.sleep(1.2)
         if not saltar_anuncios_activo():
             continue
+        if _algo_suena() is False:
+            # Nada suena (y un anuncio siempre suena): no se consulta al navegador. Cada
+            # consulta lo hace mantener su árbol de accesibilidad, que también cuesta CPU
+            continue
         try:
             yt = ventanas_youtube()[:2]
             if not yt:

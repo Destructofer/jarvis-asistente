@@ -75,13 +75,14 @@ class _Lector:
         self.indice = None
         self.hilo = None
         self.error = ""
-        self._parar = threading.Event()
+        self._evento = None       # cada hilo lector tiene SU señal de parar
+        self._t_arranque = 0.0
         # Gestos, presencia y la realidad aumentada piden la cámara a la vez desde sus hilos:
         # sin candado, uno veía el hilo lector "no vivo" mientras el otro lo creaba, intentaba
         # pararlo antes de que arrancara y el hilo de gestos moría ("cannot join thread")
         self._lock = threading.Lock()
 
-    def _bucle(self, indice):
+    def _bucle(self, indice, parar):
         import cv2
         cap = cv2.VideoCapture(indice, cv2.CAP_DSHOW)
         if not cap.isOpened():
@@ -90,41 +91,70 @@ class _Lector:
             self.error = f"No pude abrir la cámara número {indice}."
             return
         cap.set(cv2.CAP_PROP_FPS, 30)  # que no se quede en el modo lento de algunas webcams
+        ultimo_ok = time.time()
         try:
-            while not self._parar.is_set():
+            while not parar.is_set():
                 ok, frame = cap.read()
+                if parar.is_set():
+                    break  # se abandonó este hilo mientras leía: ya hay otro
                 if ok and frame is not None:
                     self.cuadro = frame
-                    self.ts = time.time()
+                    self.ts = ultimo_ok = time.time()
                 else:
+                    # Otra app tomó la cámara o se desconectó: antes se quedaba aquí para
+                    # siempre sin imagen y nadie la reabría (gestos, presencia y la realidad
+                    # aumentada se quedaban "trabados")
+                    if time.time() - ultimo_ok > 3:
+                        print("[Cámara: no entrega imagen; la reabro]")
+                        break
                     time.sleep(0.05)
                 if time.time() - self.ultimo_uso > 180:
                     break
         finally:
             cap.release()
 
+    def _colgado(self):
+        """Vivo pero sin entregar imagen hace más de 4 s (p. ej. la lectura se bloqueó)."""
+        return (self.hilo is not None and self.hilo.is_alive()
+                and time.time() - max(self.ts, self._t_arranque) > 4)
+
+    def _sirve(self, indice):
+        return (self.hilo is not None and self.hilo.is_alive() and self.indice == indice
+                and not self._colgado())
+
     def asegurar(self, indice):
         self.ultimo_uso = time.time()
-        if self.hilo is not None and self.hilo.is_alive() and self.indice == indice:
+        if self._sirve(indice):
             return
         with self._lock:
-            if self.hilo is not None and self.hilo.is_alive() and self.indice == indice:
+            if self._sirve(indice):
                 return  # otro hilo lo acaba de arrancar
+            if time.time() - self._t_arranque < 3 and self.indice == indice:
+                return  # recién se intentó: no reabrir la cámara en cada cuadro
+            if self._colgado():
+                print("[Cámara: el lector se quedó colgado; abro uno nuevo]")
             self._detener()
-            self._parar.clear()
+            evento = threading.Event()
+            self._evento = evento
             self.indice, self.error, self.cuadro = indice, "", None
-            self.hilo = threading.Thread(target=self._bucle, args=(indice,), daemon=True,
+            self._t_arranque = time.time()
+            self.hilo = threading.Thread(target=self._bucle, args=(indice, evento), daemon=True,
                                          name="camara")
             self.hilo.start()
 
     def parar(self):
         with self._lock:
             self._detener()
+            self._t_arranque = 0.0  # que el siguiente pedido la abra de inmediato
 
     def _detener(self):
-        self._parar.set()
+        if self._evento is not None:
+            self._evento.set()
         if self.hilo is not None and self.hilo.ident is not None:  # solo si llegó a arrancar
             self.hilo.join(timeout=2)
+        # Si sigue vivo (la lectura de la cámara se bloqueó) se abandona: terminará solo
+        # cuando esa lectura regrese, sin tocar el cuadro del lector nuevo
+        self.hilo = None
 
     def ultimo(self, indice):
         """(cuadro BGR de OpenCV, momento) más reciente sin convertir, para lo que analiza

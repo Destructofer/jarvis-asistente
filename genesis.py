@@ -108,6 +108,29 @@ PARA_PUBLICO = re.compile(
     r"nuestro equipo|nosotros)\b")
 
 
+CORTA_PREGUNTA = re.compile(r"(que|como|cual|cuando|donde|quien|cuanto|cuanta|por que|porque)")
+
+
+def _no_es_para_mi(cfg, texto):
+    """Lo dicho SIN llamarlo y sin una petición clara: motivo para callarse, o '' si hay que
+    dejar que el modelo decida. En una plática con alguien más, o con un video sonando,
+    Jarvis contestaba casi todo ("Entendido, si necesitas algo más...") y, sin la nube, el
+    modelo local tardaba 25-45 s en cada una."""
+    t = skills._norm(texto)
+    limpia = _limpia_orden(texto)
+    if (limpia in SALIDAS or limpia in CIERRE or buscar_atajo(texto) or atajo_medios(texto)
+            or atajo_realidad(texto) or atajo_presentacion(texto) or atajo_sistema(texto)):
+        return ""  # "pausa", "siguiente canción", "gracias": órdenes cortas que sí son para él
+    if escuchar.frase_de_la_pc(minimo=0.3):
+        return "Sonaba algo en la computadora mientras se dijo"
+    palabras = t.split()
+    if len(palabras) <= 4 and "?" not in texto and not CORTA_PREGUNTA.search(t):
+        return "Frase corta que no me pide nada"
+    if not cerebro.nube_disponible(cfg):
+        return "Sin la nube no adivino si era para mí (el modelo local contesta todo)"
+    return ""
+
+
 def clasificar_seguimiento(texto):
     """'jarvis' si es claramente para él, 'publico' si claramente se le habla a la audiencia,
     'duda' si no se sabe (lo decide el modelo)."""
@@ -1908,6 +1931,12 @@ def main(persistente=False):
             clase = clasificar_seguimiento(user)
             if clase == "jarvis":
                 seguimiento = False  # petición clara: contesta normal, sin filtro
+            elif clase == "duda" and not escrito:
+                motivo = _no_es_para_mi(cfg, user)
+                if motivo:
+                    print(f"Tú (sin llamarme): {user}" + chr(10) + f"[{motivo}: me quedo callado]" + chr(10))
+                    hud.estado("escuchando" if en_conversacion() else "inactivo")
+                    continue
             elif clase == "publico" and expositor.ACTIVO:
                 if not _puede_complementar(cfg):
                     print(f"[Se lo dijiste al público, no a mí: {user}]\n")
