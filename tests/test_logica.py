@@ -1837,17 +1837,40 @@ class CorreoImportante(unittest.TestCase):
 
 
 class WhatsAppSinResponder(unittest.TestCase):
-    def test_filas_y_pendientes(self):
+    """Con el formato real de la app de escritorio (WhatsApp para Windows 2.26)."""
+
+    def test_filas_reales(self):
         import whatsapp
         f = whatsapp.interpretar_fila
-        chats = [f(["Mamá", "10:32", "¿Ya llegaste?", "2 mensajes no leídos"]),
-                 f(["Equipo", "9:15", "Tú: ya subí el reporte", "Leído"]),
-                 f(["Juan", "ayer", "¿Mañana a qué hora?"]),
-                 f(["Banco", "02/10/2026", "Tu código es 1234"])]
-        self.assertEqual(chats[0]["no_leidos"], 2)
-        self.assertTrue(chats[1]["de_mi"])
-        nombres = [c["nombre"] for c in whatsapp.sin_responder(chats)]
-        self.assertEqual(nombres, ["Mamá", "Juan"])   # ni el que ya contestaste ni el viejo
+        c = f("Mamá 10:32 AM 2 unread messages", "2 unread messages ¿Ya llegaste?")
+        self.assertEqual((c["nombre"], c["hora"], c["no_leidos"], c["mensaje"], c["grupo"]),
+                         ("Mamá", "10:32 AM", 2, "¿Ya llegaste?", False))
+        g = f("Equipo 9:15 AM 3 unread messages", "3 unread messages Juan Pérez: ya subí el reporte")
+        self.assertEqual((g["grupo"], g["remitente"], g["mensaje"]), (True, "Juan Pérez", "ya subí el reporte"))
+        t = f("Ventas 9:50 AM 31 unread messages", "31 unread messages Ventas ~ Edgar : Photo")
+        self.assertEqual((t["grupo"], t["remitente"]), (True, "Edgar"))
+        m = f("Sistemas 8:00 AM 4 unread messages Sistemas Muted chat", "4 unread messages hola")
+        self.assertTrue(m["silenciado"])
+        self.assertEqual(f("Comunidad Yesterday 690 unread messages", "690 unread messages Comunidad")["mensaje"], "")
+        self.assertEqual(f("Mamá 🌸 10:32 AM", "hola")["nombre"], "Mamá")   # sin emojis para la voz
+        self.assertIsNone(f("Sin hora", "texto"))
+
+    def test_resumen_personas_primero_y_grupos_juntos(self):
+        import whatsapp
+        f = whatsapp.interpretar_fila
+        chats = [f("Ventas 9:50 AM 690 unread messages", "690 unread messages Ventas"),
+                 f("Mamá 10:32 AM 2 unread messages", "2 unread messages ¿Ya llegaste?"),
+                 f("Ventas 9:40 AM 107 unread messages", "107 unread messages Ventas ~ Edgar : Photo"),
+                 f("Juan Sunday 1 unread message", "1 unread message viejo"),          # más de 24 h
+                 f("Sistemas 8:00 AM 4 unread messages Muted chat", "4 unread messages x"),  # silenciado
+                 f("Pepe 8:00 AM", "ya leído")]                                        # sin pendientes
+        texto = whatsapp.redactar(chats)
+        self.assertTrue(texto.startswith("En WhatsApp te escribieron 1 persona y no has respondido: "
+                                         "Mamá, 2 mensajes: ¿Ya llegaste?"))
+        self.assertIn("Ventas con 797", texto)
+        self.assertNotIn("Juan", texto)
+        self.assertNotIn("?.", texto)
+        self.assertIn("1 grupo silenciado", texto)
 
 
 class ClimaDicho(unittest.TestCase):
