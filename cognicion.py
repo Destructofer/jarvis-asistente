@@ -44,11 +44,32 @@ PROFUNDO = re.compile(
     r"opinas|que piensas|crees que|vale la pena|que pasaria si|y si|consejo|aconsejas)\b")
 
 
+# Te está PLATICANDO algo (una situación, un problema, algo que le pasó o le preocupa), no
+# dando una orden: ahí se piensa a fondo y se contesta como una persona que escucha y analiza
+SITUACION = re.compile(
+    r"\b(me paso|me sucedio|te cuento|te platico|dejame contarte|fijate que|resulta que|"
+    r"tengo un problema|tengo un dilema|no se que hacer|no se si|que hago|que harias|que le digo|"
+    r"como le digo|estoy pensando en|estoy pensando si|me late|me preocupa|me da miedo|me siento|"
+    r"me senti|estoy (?:triste|preocupad[oa]|estresad[oa]|nervios[oa]|enojad[oa]|confundid[oa]|"
+    r"cansad[oa]|harto|harta|agobiad[oa]|feliz|emocionad[oa])|"
+    r"mi (?:jefe|jefa|novia|novio|pareja|esposa|esposo|mama|papa|amigo|amiga|maestro|maestra|"
+    r"profesor|profesora|companero|companera|hermano|hermana|familia) (?:me|no|dijo|quiere|esta|"
+    r"hizo|piensa|cree)|"
+    r"me pelee|nos peleamos|me dijeron|me dijo|me corrieron|me rechazaron|me ofrecieron|"
+    r"termine con|me cortaron|me cambiaron|reprobe|me fue mal|me fue bien|"
+    r"como ves (?:que|esto|la situacion)|que opinas de que|analiza (?:esto|esta situacion|la situacion|"
+    r"lo que)|ayudame a ver|tu que harias)\b")
+
+
+def es_situacion(texto):
+    return bool(SITUACION.search(skills._norm(texto or "")))
+
+
 def nivel(texto):
     """'rapido' (orden directa), 'normal' o 'profundo' (merece pensarse)."""
     t = skills._norm(texto)
     palabras = len(t.split())
-    if PROFUNDO.search(t) or palabras >= 28:
+    if PROFUNDO.search(t) or palabras >= 28 or SITUACION.search(t):
         return "profundo"
     if ACCION.search(t) and palabras <= 14:
         return "rapido"
@@ -80,8 +101,20 @@ REGLA_PROFUNDA = (
     "Si te falta un dato clave para responder bien, pregunta solo eso.")
 
 
-def reglas(n):
-    return REGLAS + (REGLA_PROFUNDA if n == "profundo" else "")
+REGLA_SITUACION = (
+    "\n\nTE ESTÁ PLATICANDO UNA SITUACIÓN (no es una orden): contesta como una persona que de "
+    "verdad escucha y piensa, no como un buscador. Primero muestra en una frase natural que "
+    "entendiste lo importante (y cómo se siente, si aplica). Luego analízalo: qué está pasando de "
+    "fondo, qué opciones tiene, qué ganaría o arriesgaría con cada una y qué harías tú, con una "
+    "postura clara y tu razón principal. Usa lo que recuerdas de esa persona. Si falta un dato que "
+    "lo cambia todo, pregunta solo eso. Sin listas, sin sermones y sin frases de manual: 3 a 6 "
+    "frases en tono de plática. Si la persona la está pasando muy mal o hay riesgo para alguien, "
+    "dilo con cuidado y sugiere apoyarse en alguien de confianza o un profesional.")
+
+
+def reglas(n, texto=""):
+    extra = REGLA_SITUACION if texto and es_situacion(texto) else ""
+    return REGLAS + (REGLA_PROFUNDA if n == "profundo" else "") + extra
 
 
 # ---------- 3. Aprender del usuario ----------

@@ -14,7 +14,9 @@
 > `avatares.py` (el personaje animado del HUD según la acción; GIF en Documentos\Jarvis\Avatares) y `descargas.py` (el HUD muestra las descargas), `cognicion.py`
 > (cuánto y cómo pensar, calcular y fechas exactas, aprender del usuario) y `preferencias.py`
 > (navegador, música y apps preferidas, e instrucciones permanentes) e `interaccion.py` (elegir
-> lo que se ve en pantalla, controlar el video o la música, saltar anuncios, escribir en campos).
+> lo que se ve en pantalla, controlar el video o la música, saltar anuncios, escribir en campos), `personalidades.py`
+> (mirrey, godín, abuelita, coach... la elegida se recuerda) y `habitos.py` (aprende tus rutinas
+> y te ofrece lo que sueles hacer).
 
 # Genesis
 

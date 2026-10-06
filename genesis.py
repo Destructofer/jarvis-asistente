@@ -23,6 +23,7 @@ import entorno  # escanear_entorno y vigilar_camara
 import expositor
 import gestos  # manos por la cámara de la PC, estilo Iron Man (MediaPipe, local)
 import graph  # noqa: F401  (registra las skills de lectura de archivos de Teams)
+import habitos  # aprende tus rutinas (música al trabajar, apps a cierta hora) y te las ofrece
 import hud
 import interaccion  # elegir lo que se ve (el primer video...), controlar el video, anuncios
 import mantenimiento
@@ -30,6 +31,7 @@ import memoria
 import multimedia  # noqa: F401  (registra las skills youtube y spotify)
 import observador  # observa al público en modo expositor (dudas, con quién platicas)
 import panel
+import personalidades  # mirrey, godín, abuelita... (la elegida se recuerda)
 import presencia  # Jarvis te ve: te saluda al llegar, nota cómo estás, te mira si se lo pides
 import preferencias  # navegador, música, apps preferidas e instrucciones permanentes
 import presentacion
@@ -108,7 +110,7 @@ PARA_PUBLICO = re.compile(
     r"nuestro equipo|nosotros)\b")
 
 
-CORTA_PREGUNTA = re.compile(r"(que|como|cual|cuando|donde|quien|cuanto|cuanta|por que|porque)")
+CORTA_PREGUNTA = re.compile(r"\b(que|como|cual|cuando|donde|quien|cuanto|cuanta|por que|porque)\b")
 
 
 def _no_es_para_mi(cfg, texto):
@@ -121,6 +123,8 @@ def _no_es_para_mi(cfg, texto):
     if (limpia in SALIDAS or limpia in CIERRE or buscar_atajo(texto) or atajo_medios(texto)
             or atajo_realidad(texto) or atajo_presentacion(texto) or atajo_sistema(texto)):
         return ""  # "pausa", "siguiente canción", "gracias": órdenes cortas que sí son para él
+    if time.time() < _pregunta_abierta["hasta"] or habitos.pendiente() is not None:
+        return ""  # Jarvis acaba de preguntarte algo: "sí", "no", "va" son la respuesta
     if escuchar.frase_de_la_pc(minimo=0.3):
         return "Sonaba algo en la computadora mientras se dijo"
     palabras = t.split()
@@ -357,6 +361,11 @@ GRUPOS = [
     (r"realidad|aumentada|virtual|vision pro|holograma|hologra|modo ar|gafas|lentes virtuales|"
      r"entorno virtual|mixta|sal del modo",
      ["modo_realidad"]),
+    (r"personalidad|modo |habla(?:me)? como|actua como|se tu mismo|vuelve a ser|como eres|"
+     r"mirrey|godin|fresa|chavorruco|abuelita|norteno|coach|terapeuta|narrador|sarcastico|zen",
+     ["cambiar_personalidad", "listar_personalidades"]),
+    (r"habito|rutina|costumbre|sueles|siempre hago|sugier|sugerencia|aprendiste de mi|que sabes de mi",
+     ["mis_habitos", "sugerencias_habitos", "olvidar_habitos"]),
     (r"rutina|demo",
      ["rutina", "listar_rutinas", "ensayar_demo", "recorrer_modulos"]),
     (r"mirame|me ves|me estas viendo|como me veo|verme|tengo en la mano|traigo|te muestro|"
@@ -800,6 +809,29 @@ QUE_HAY = re.compile(r"^(?:que|cuales) (videos|canciones|playlists|listas|mix|mi
                      r"(?: en (?:la |esta )?(?:pantalla|pagina|youtube)| aqui| ahi)?$")
 
 
+PIDE_PERSONALIDAD = re.compile(
+    r"\b(personalidad|ponte en modo|ponte modo|modo|habla(?:me)? como|actua como|se como|"
+    r"conviertete en|vuelve a ser|se tu mismo|regresa a ser|cambia(?:te)? a)\b")
+
+
+def atajo_personalidad(texto):
+    """'ponte en modo mirrey', 'cambia tu personalidad a abuelita', 'vuelve a ser normal': al
+    instante y sin el modelo (si no, en plena personalidad el modelo a veces contestaba "¡va!"
+    sin cambiarla)."""
+    t = _limpia_orden(texto)
+    if not PIDE_PERSONALIDAD.search(t):
+        return None
+    clave = personalidades.buscar(t)
+    if clave is None:
+        return None
+    if clave == "jarvis" and not re.search(r"personalidad|normal|tu mismo|clasic|original|de siempre", t):
+        return None  # "modo Jarvis" suelto no es un cambio de personalidad
+    args = {"personalidad": clave}
+    if re.search(r"exposicion|exponer|presentacion|publico", t):
+        args["tambien_en_exposicion"] = True
+    return "cambiar_personalidad", args
+
+
 def atajo_medios(texto):
     """(skill, args) si es una orden corta de reproducción ("pausa", "siguiente canción",
     "salta el anuncio", "adelanta 30 segundos"); si no, None."""
@@ -829,6 +861,20 @@ def atajo_medios(texto):
         segundos = 10
     accion = "adelantar" if verbo.startswith(("adelanta", "avanza")) else "retroceder"
     return "controlar_reproduccion", {"accion": accion, "segundos": segundos}
+
+
+def _respuesta_a_sugerencia(texto):
+    """Jarvis acaba de ofrecer algo que sueles hacer ("¿te pongo música?"): un sí lo hace al
+    instante (sin el modelo) y un no se anota, para no volver a insistir."""
+    if habitos.pendiente() is None:
+        return None
+    si_no = skills.respuesta_si_no(texto)
+    if si_no is None:
+        return None
+    accion = habitos.responder(si_no)
+    if accion is None:
+        return "sugerencia_rechazada", {}
+    return accion
 
 
 def atajo_presentacion(texto):
@@ -1202,7 +1248,12 @@ def ejecutar_herramienta(cfg, nombre, args):
         if not confirmar(cfg, skills.pregunta(nombre)):
             return skills.Fallo("El usuario canceló la acción. No se ejecutó nada.")
     print(f"[Skill] {nombre} {args}")
-    return skills.ejecutar(nombre, args)
+    resultado = skills.ejecutar(nombre, args)
+    try:
+        habitos.registrar_accion(nombre, args, resultado)
+    except Exception:
+        pass
+    return resultado
 
 
 def _unir(resultados):
@@ -1435,6 +1486,10 @@ GUIAS = {
                               "completa, subtítulos o saltar un anuncio usa controlar_reproduccion.",
     "escribir_en": "Para escribir en un buscador, chat o campo de la ventana usa escribir_en "
                    "(no hace falta dar clic antes).",
+    "cambiar_personalidad": "Si pide que hables distinto o de cierta forma de ahora en adelante "
+                            "(mirrey, abuelita, coach, más serio, normal...), usa cambiar_personalidad.",
+    "mis_habitos": "Si pregunta qué hábitos o rutinas suyas conoces, usa mis_habitos; si no quiere "
+                   "que le sugieras cosas, sugerencias_habitos con activar=false.",
     "calendario": "Si la pregunta es de fechas (qué día cae, cuántos días faltan, qué fecha será), "
                   "usa calendario; nunca lo calcules de memoria.",
 }
@@ -1455,7 +1510,8 @@ def _prompt(cfg, herramientas=None, texto=""):
     en_exposicion = expositor.ACTIVO or _demo(cfg).get("activo")
     import datetime
     ahora = datetime.datetime.now()
-    partes = [memoria.prompt_sistema(_personalidad(cfg, en_exposicion)), REGLA_EXTERNO,
+    partes = [memoria.prompt_sistema(_personalidad(cfg, en_exposicion)),
+              personalidades.prompt(en_exposicion), REGLA_EXTERNO,
               REGLA_ORDENES, expositor.prompt_extra(),
               # sin esto inventaba el día de la semana
               f"\n\nAHORA: {skills.DIAS[ahora.weekday()]} {ahora.day} de "
@@ -1490,7 +1546,7 @@ def _prompt(cfg, herramientas=None, texto=""):
     guias = [g for n, g in GUIAS.items() if herramientas is not None and n in herramientas]
     if guias:
         partes.append("\n\nCómo usar estas herramientas: " + " ".join(guias))
-    partes.append(cognicion.reglas(cognicion.nivel(texto) if texto else "normal"))
+    partes.append(cognicion.reglas(cognicion.nivel(texto) if texto else "normal", texto))
     partes.append(_estado_vivo() + cognicion.contexto())
     partes.append(acciones.REGLA)
     return "".join(p for p in partes if p)
@@ -1551,6 +1607,8 @@ def _entregar(cfg, turno, resultado, herramientas=None):
     hud.accion(categoria, completado=bool(usadas) and categoria != "confundido")
     if isinstance(resultado, (Callado, YaDicho)):
         return
+    if not isinstance(resultado, skills.Fallo) and usadas:
+        texto = personalidades.adornar(texto, usadas)  # "Va, mi rey. Abriendo Spotify."
     turno.decir(_para_voz(texto))
 
 
@@ -1610,6 +1668,7 @@ _ultimo_turno = {"ignorado": False}
 _ocupado = {"turno": False}        # hay una orden en curso (el observador no debe hablar)
 _turno_vivo = {"interrumpir": None}  # cómo cortar la orden en curso (la ✋ de gestos.py)
 _notas = []                        # lo que Jarvis dijo por iniciativa propia, para la conversación
+_pregunta_abierta = {"hasta": 0.0}  # Jarvis preguntó algo por su cuenta y espera respuesta
 _complemento = {"ultimo": 0.0}
 
 
@@ -1637,6 +1696,8 @@ def intervenir(cfg, texto, publico=True):
     dice, lo anota en la conversación y se queda escuchando la respuesta sin que nadie diga
     "Jarvis". publico=False: te lo dice a ti (salida normal), no por las bocinas del público."""
     _notas.append({"role": "assistant", "content": texto})
+    if "?" in texto:  # preguntó algo: un "sí" o un "no" corto es la respuesta, no plática ajena
+        _pregunta_abierta["hasta"] = time.time() + 40
     decir(cfg, texto, publico=publico)
     abrir_conversacion(cfg)
     escuchar.CONVERSAR.set()  # corta la espera de la palabra de activación
@@ -1729,7 +1790,7 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
     try:
         # Atajos: órdenes simples sin pasar por el modelo
         rapido = (atajo_presentacion(user) or atajo_sistema(user) or atajo_realidad(user)
-                  or atajo_medios(user))
+                  or atajo_medios(user) or atajo_personalidad(user) or _respuesta_a_sugerencia(user))
         if rapido:
             reply = ejecutar_herramienta(cfg, *rapido)
             _entregar(cfg, turno, reply, [rapido[0]])
@@ -1856,6 +1917,17 @@ def main(persistente=False):
     hud.iniciar(cfg)
     descargas.iniciar(cfg)
     interaccion.iniciar()  # omite solos los anuncios de YouTube que se pueden omitir
+    personalidades.configurar(cfg)  # la personalidad que elegiste (y su voz), desde el arranque
+
+    def ofrecer_habito(texto):
+        if not puede_hablar_por_su_cuenta() or presentando(cfg):
+            return False
+        print(f"{_nombre(cfg)} (por su cuenta): {texto}")
+        intervenir(cfg, texto, publico=False)
+        return True
+    habitos.iniciar(cfg, ofrecer=ofrecer_habito,
+                    libre=lambda: puede_hablar_por_su_cuenta() and not presentando(cfg)
+                    and not en_conversacion())
 
     # Las rutinas y el modo expositor hablan y ejecutan pasos a través de las mismas funciones
     # que una orden normal (mismas confirmaciones, misma salida de audio)

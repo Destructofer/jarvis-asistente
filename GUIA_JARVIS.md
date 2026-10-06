@@ -309,6 +309,48 @@ largos se analizan por partes. Todo en `documentos.py`.
 
 En `entorno.py`. Usa la misma fuente de cámara que "¿qué ves?" (`camara.fuente`).
 
+## Personalidades (`personalidades.py`)
+
+Como los modos de voz de Grok en un Tesla, pero con sabor mexicano: "Jarvis, ponte en modo
+mirrey", "háblame como abuelita", "cambia tu personalidad a norteño", "vuelve a ser normal",
+"¿qué personalidades tienes?". La que elijas se queda **para siempre** (también al reiniciar)
+hasta que pidas otra, y cambia el tono, las palabras y la voz:
+
+| Personalidad | Cómo es |
+|---|---|
+| Jarvis clásico | elegante, seguro, humor fino (la de siempre) |
+| Mirrey | "mi rey", "papá", "neta", "lo que le sigue", "simple is nice" |
+| Godín | "licenciado", "quedo atento", "ya falta poco para salir" |
+| Fresa | "o sea", "qué oso", "obvi", spanglish |
+| Chavorruco | "qué hongo, carnal", "de pelos", referencias de los 90 |
+| Abuelita | "mijo, ¿ya comiste?", dichos, ternura (voz de Dalia, lenta) |
+| Norteño | "fierro, pariente", "arre", "compa" |
+| Coach, Terapeuta, Narrador, Discutidor, Sin filtro, Profesor, Tutor de inglés, Zen, Niños | los modos de Grok, en español |
+
+La personalidad cambia **cómo** lo dice, nunca lo que hace: las órdenes se ejecutan igual, no
+inventa y los riesgos o errores los dice claro. En plena exposición usa la clásica (salvo
+"ponte en modo coach también en la exposición").
+
+## Hábitos (`habitos.py`)
+
+Jarvis nota tus rutinas (todo local, en `datos/habitos.db`): cada minuto que usas la computadora
+anota qué app tienes al frente y si suena música de fondo, y también lo que le pides y a qué
+hora. Con eso te ofrece lo que sueles hacer:
+
+- "Oye, Abraham, cuando estás en VS Code sueles tener música. ¿Te pongo lo de siempre?" → "sí".
+- "Normalmente a esta hora abres Spotify. ¿Lo abro?"
+
+Solo ofrece algo que hiciste en 3 días distintos o más, nunca más de una vez cada 30 minutos, ni
+mientras expones; si le dices que no dos veces, deja de ofrecerlo ahí una semana. "¿Qué hábitos
+has aprendido de mí?", "deja de sugerirme cosas", "olvida mis hábitos".
+
+## Platicarle una situación (`cognicion.py`)
+
+Si le cuentas algo ("fíjate que mi jefe me quiere cambiar de área y no sé qué hacer", "estoy
+estresado con la escuela"), Jarvis lo piensa a fondo y contesta como una persona: entiende lo
+importante, analiza opciones y riesgos, te da su opinión con su razón y, si falta un dato
+clave, te lo pregunta. Con la personalidad que tenga activa.
+
 ## Usar páginas y apps como tú (`interaccion.py`)
 
 Jarvis ve lo que hay en la ventana **en el orden en que tú lo ves** y sabe qué es cada cosa:

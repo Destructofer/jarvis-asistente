@@ -5,6 +5,7 @@
 Cubren los errores que ya pasaron en la vida real (atajos que bloqueaban la PC, "Adiós" que no
 cerraba, confirmaciones en cadena, fallos de rutina mal detectados...) para que no regresen.
 """
+import datetime
 import os
 import sys
 import tempfile
@@ -1492,3 +1493,181 @@ class RealidadAumentada(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodigoLimpio(unittest.TestCase):
+    def test_sin_caracteres_de_control_escondidos(self):
+        """Un \\b mal escapado quedó como carácter de retroceso: la regex nunca coincidía y nadie
+        lo notaba (pasó dos veces). Ningún .py del proyecto debe tener caracteres de control."""
+        raiz = Path(__file__).resolve().parents[1]
+        malos = []
+        for archivo in list(raiz.glob("*.py")) + list((raiz / "tests").glob("*.py")):
+            texto = archivo.read_text(encoding="utf-8")
+            for n, linea in enumerate(texto.splitlines(), 1):
+                if any(ord(c) < 32 and c != "\t" for c in linea):
+                    malos.append(f"{archivo.name}:{n}")
+        self.assertEqual(malos, [])
+
+
+class Personalidades(unittest.TestCase):
+    def setUp(self):
+        import memoria
+        import personalidades
+        self.P = personalidades
+        self._db = memoria.DB_PATH
+        memoria.DB_PATH = Path(tempfile.mkdtemp()) / "prueba.db"
+        personalidades._estado["cache"] = None
+        self.conf = {"edge_voz": "es-MX-JorgeNeural", "edge_velocidad": "+5%", "edge_tono": "+0Hz"}
+        self._voz = voz._CONF
+        voz._CONF = self.conf
+        personalidades._estado["original_voz"] = None
+        personalidades._cfg["cfg"] = self.conf
+
+    def tearDown(self):
+        import memoria
+        memoria.DB_PATH = self._db
+        voz._CONF = self._voz
+        self.P._estado["cache"] = None
+        self.P._estado["original_voz"] = None
+
+    def test_se_reconoce_como_lo_dirias(self):
+        b = self.P.buscar
+        self.assertEqual(b("ponte en modo mirrey"), "mirrey")
+        self.assertEqual(b("háblame como abuelita"), "abuelita")
+        self.assertEqual(b("personalidad de godín"), "godin")
+        self.assertEqual(b("vuelve a ser normal"), "jarvis")
+        self.assertIsNone(b("activa el modo realidad aumentada"))
+
+    def test_se_queda_para_siempre_y_cambia_la_voz(self):
+        self.P.cambiar_personalidad("abuelita")
+        self.assertEqual(self.conf["edge_voz"], "es-MX-DaliaNeural")
+        self.P._estado["cache"] = None                    # como si Jarvis se reiniciara
+        self.assertEqual(self.P.actual()[0], "abuelita")  # sigue guardada
+        self.assertIn("Abuelita", self.P.prompt())
+        self.assertEqual(self.P.prompt(en_exposicion=True), "")   # al exponer, la clásica
+        self.P.cambiar_personalidad("normal")
+        self.assertEqual(self.conf, {"edge_voz": "es-MX-JorgeNeural", "edge_velocidad": "+5%",
+                                     "edge_tono": "+0Hz"})   # su voz original de vuelta
+        self.assertEqual(self.P.prompt(), "")
+
+    def test_tambien_al_exponer_si_lo_pide(self):
+        self.P.cambiar_personalidad("coach", tambien_en_exposicion=True)
+        self.assertIn("Coach", self.P.prompt(en_exposicion=True))
+
+    def test_todas_completas(self):
+        for clave, p in self.P.PERSONALIDADES.items():
+            for campo in ("nombre", "alias", "descripcion", "estilo", "ejemplos", "voz", "saludo"):
+                self.assertIn(campo, p, clave)
+            if clave != "jarvis":
+                self.assertTrue(p["estilo"] and p["ejemplos"], clave)
+            self.assertEqual(self.P.buscar(p["nombre"]), clave, clave)
+
+    def test_atajo_para_cambiar(self):
+        self.assertEqual(genesis.atajo_personalidad("Jarvis, ponte en modo mirrey"),
+                         ("cambiar_personalidad", {"personalidad": "mirrey"}))
+        self.assertEqual(genesis.atajo_personalidad("cambia tu personalidad a norteño"),
+                         ("cambiar_personalidad", {"personalidad": "norteno"}))
+        self.assertIsNone(genesis.atajo_personalidad("activa el modo realidad aumentada"))
+        self.assertIsNone(genesis.atajo_personalidad("mi abuelita hace buen mole"))
+
+
+class Habitos(unittest.TestCase):
+    def setUp(self):
+        import habitos
+        self.H = habitos
+        self._db = habitos.DB
+        habitos.DB = Path(tempfile.mkdtemp()) / "habitos.db"
+        habitos._estado.update(pendiente=None, ultima=0.0)
+
+    def tearDown(self):
+        self.H.DB = self._db
+        self.H._estado.update(pendiente=None, ofrecer=None, libre=None)
+
+    @staticmethod
+    def _obs(dias_atras, hora, app, musica, titulo="Lofi Girl", fuente="Edge", base=None):
+        base = base or time.time()
+        d = datetime.datetime.fromtimestamp(base - dias_atras * 86400).replace(
+            hour=int(hora), minute=int(round((hora % 1) * 60)) % 60, second=0)
+        return {"ts": d.timestamp(), "dia": d.weekday(), "hora": hora, "app": app, "musica": musica,
+                "fuente": fuente if musica else "", "titulo": titulo if musica else ""}
+
+    def test_musica_de_fondo_vs_ver_un_video(self):
+        sonando = [("Edge", "Lofi Girl", "", 4)]
+        self.assertEqual(self.H.musica_de_fondo("code.exe", sonando)[0], 1)   # programas, suena
+        self.assertEqual(self.H.musica_de_fondo("msedge.exe", sonando)[0], 0)  # lo estás viendo
+        self.assertEqual(self.H.musica_de_fondo("msedge.exe", [("Spotify", "x", "", 4)])[0], 1)
+        self.assertEqual(self.H.musica_de_fondo("code.exe", [("Edge", "x", "", 5)])[0], 0)  # en pausa
+
+    def test_ofrece_musica_si_es_tu_costumbre(self):
+        ahora = datetime.datetime.now().replace(hour=16, minute=10).timestamp()
+        mismos = [d for d in range(1, 15)
+                  if self.H._finde(self._obs(d, 16, "x", 0, base=ahora)["dia"])
+                  == self.H._finde(datetime.datetime.fromtimestamp(ahora).weekday())][:5]
+        historial = [self._obs(d, 16 + m / 60, "code.exe", 1, base=ahora) for d in mismos for m in range(0, 30, 3)]
+        historial += [self._obs(d, 16 + m / 60, "code.exe", 0, base=ahora) for d in mismos for m in range(30, 40, 3)]
+        recientes = [self._obs(0, 16 + (10 - i) / 60, "code.exe", 0, base=ahora) for i in range(6)]
+        r = self.H.evaluar_musica(historial, recientes)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["titulo"], "Lofi Girl")
+        self.assertGreaterEqual(r["dias"], 3)
+
+    def test_no_ofrece_sin_costumbre_o_con_musica(self):
+        ahora = datetime.datetime.now().replace(hour=16, minute=10).timestamp()
+        recientes = [self._obs(0, 16 + (10 - i) / 60, "code.exe", 0, base=ahora) for i in range(6)]
+        sin = [self._obs(d, 16 + m / 60, "code.exe", 0, base=ahora) for d in range(1, 6) for m in range(0, 30, 3)]
+        self.assertIsNone(self.H.evaluar_musica(sin, recientes))           # nunca pones música ahí
+        con = [self._obs(d, 16 + m / 60, "code.exe", 1, base=ahora) for d in range(1, 6) for m in range(0, 30, 3)]
+        sonando = [self._obs(0, 16 + (10 - i) / 60, "code.exe", 1, base=ahora) for i in range(6)]
+        self.assertIsNone(self.H.evaluar_musica(con, sonando))             # ya tienes música
+        pocos = [self._obs(1, 16 + m / 60, "code.exe", 1, base=ahora) for m in range(0, 58, 2)]
+        self.assertIsNone(self.H.evaluar_musica(pocos, recientes))         # un solo día: no es hábito
+
+    def test_rutina_a_la_misma_hora(self):
+        ahora = datetime.datetime.now().replace(hour=9, minute=30).timestamp()
+        hoy_finde = self.H._finde(datetime.datetime.fromtimestamp(ahora).weekday())
+        acciones = []
+        for d in range(1, 15):
+            o = self._obs(d, 9.5, "", 0, base=ahora)
+            if self.H._finde(o["dia"]) == hoy_finde and len(acciones) < 4:
+                acciones.append({"ts": o["ts"], "dia": o["dia"], "hora": o["hora"],
+                                 "clave": "abrir_app:spotify", "skill": "abrir_app",
+                                 "args": '{"nombre": "Spotify"}', "app": ""})
+        r = self.H.evaluar_rutinas(acciones, ahora, set(), set())
+        self.assertEqual(r["skill"], "abrir_app")
+        self.assertEqual(r["args"], {"nombre": "Spotify"})
+        self.assertIsNone(self.H.evaluar_rutinas(acciones, ahora, {"abrir_app:spotify"}, set()))  # ya lo hiciste hoy
+        lejos = datetime.datetime.now().replace(hour=18, minute=0).timestamp()
+        self.assertIsNone(self.H.evaluar_rutinas(acciones, lejos, set(), set()))   # no es la hora
+
+    def test_respuesta_si_hace_la_accion_y_no_cuenta_rechazo(self):
+        dicho = []
+        self.H._estado.update(ofrecer=lambda t: dicho.append(t) or True, libre=lambda: True)
+        self.assertTrue(self.H._ofrecer("musica", "code.exe", "youtube", {"consulta": "lofi"}, "¿Música?"))
+        self.assertIsNotNone(self.H.pendiente())
+        self.assertEqual(self.H.responder(True), ("youtube", {"consulta": "lofi"}))
+        self.H._ofrecer("musica", "code.exe", "youtube", {"consulta": "lofi"}, "¿Música?")
+        self.assertIsNone(self.H.responder(False))
+        ofertas = [dict(o) for o in self.H._q("SELECT * FROM ofertas")]
+        self.assertEqual([o["respuesta"] for o in ofertas], ["si", "no"])
+        self.assertEqual(self.H.rechazos(ofertas, "musica", "code.exe", time.time()), 1)
+
+    def test_aprende_lo_que_pides(self):
+        self.H.registrar_accion("abrir_app", {"nombre": "Spotify"}, "Abriendo Spotify.")
+        self.H.registrar_accion("volumen", {"nivel": 50}, "ok")                    # no es rutina
+        self.H.registrar_accion("abrir_app", {"nombre": "X"}, skills.Fallo("no"))  # falló
+        filas = self.H._q("SELECT clave FROM acciones")
+        self.assertEqual([f["clave"] for f in filas], ["abrir_app:spotify"])
+
+    def test_resumen_con_pocos_datos(self):
+        self.assertIn("aprendiendo", self.H.resumen())
+
+
+class AnalizarSituaciones(unittest.TestCase):
+    def test_platica_vs_orden(self):
+        import cognicion
+        self.assertTrue(cognicion.es_situacion("fíjate que mi jefe me dijo que me van a cambiar de área"))
+        self.assertTrue(cognicion.es_situacion("estoy estresado con la escuela"))
+        self.assertFalse(cognicion.es_situacion("abre spotify"))
+        self.assertEqual(cognicion.nivel("te cuento: me ofrecieron un trabajo en Monterrey"), "profundo")
+        self.assertIn("PLATICANDO", cognicion.reglas("profundo", "no sé qué hacer con mi novia"))
+        self.assertNotIn("PLATICANDO", cognicion.reglas("rapido", "abre spotify"))

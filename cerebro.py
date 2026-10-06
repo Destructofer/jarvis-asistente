@@ -241,6 +241,11 @@ def _kwargs_nube(prov, history, tools, temperatura):
         kwargs["tool_choice"] = "auto"
     if prov.get("razonamiento") and acepta_razonamiento(prov["modelo"]):
         kwargs["reasoning_effort"] = prov["razonamiento"]  # "low" = responde más rápido
+        # Lo que piensa gpt-oss cuenta dentro de max_tokens: con 400 y razonamiento alto se le
+        # acababa pensando y la respuesta llegaba VACÍA ("no logré procesar eso")
+        minimo = {"high": 2000, "medium": 1200}.get(prov["razonamiento"])
+        if minimo and kwargs.get("max_tokens", minimo) < minimo:
+            kwargs["max_tokens"] = minimo
     return kwargs
 
 

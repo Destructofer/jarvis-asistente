@@ -372,5 +372,9 @@
       "profundo": "high"
     },
     "pensar_local": false
+  },
+  "habitos": {
+    "activo": true,
+    "sugerir": true
   }
 }

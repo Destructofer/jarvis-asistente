@@ -272,7 +272,7 @@ def _coincide(contiene, nombre):
         return True
     nombre = limpio(nombre)  # sin "3 minutos y 7 segundos": "el segundo" no es "segundos"
     a, b = _norm(contiene), _norm(nombre)
-    return bool(re.search(rf"{re.escape(a)}", b)) or control._parecido(contiene, nombre) >= 0.6
+    return bool(re.search(rf"\b{re.escape(a)}\b", b)) or control._parecido(contiene, nombre) >= 0.6
 
 
 def escoger(cosas, clases, posicion=1, contiene=""):
