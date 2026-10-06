@@ -810,7 +810,7 @@ QUE_HAY = re.compile(r"^(?:que|cuales) (videos|canciones|playlists|listas|mix|mi
 
 
 PIDE_PERSONALIDAD = re.compile(
-    r"\b(personalidad|ponte en modo|ponte modo|modo|habla(?:me)? como|actua como|se como|"
+    r"\b(personalidad|ponte en modo|ponte modo|ponte como|modo|habla(?:me)? como|actua como|se como|"
     r"conviertete en|vuelve a ser|se tu mismo|regresa a ser|cambia(?:te)? a)\b")
 
 
@@ -1717,6 +1717,8 @@ def escuchar_por_gesto(cfg):
     """☝: te escucha sin que digas "Jarvis" (bip y la misma ventana de conversación)."""
     if _ocupado["turno"]:
         return
+    if escuchar.microfono_silenciado() and escuchar.activar_microfono():
+        decir(cfg, "Listo, reactivé tu micrófono.")
     pitido(cfg)
     abrir_conversacion(cfg)
     escuchar.CONVERSAR.set()  # corta la espera de la palabra de activación
@@ -1918,6 +1920,7 @@ def main(persistente=False):
     descargas.iniciar(cfg)
     interaccion.iniciar()  # omite solos los anuncios de YouTube que se pueden omitir
     personalidades.configurar(cfg)  # la personalidad que elegiste (y su voz), desde el arranque
+    escuchar.vigilar_microfono(lambda texto: avisar(cfg, texto))  # micrófono silenciado en Windows
 
     def ofrecer_habito(texto):
         if not puede_hablar_por_su_cuenta() or presentando(cfg):

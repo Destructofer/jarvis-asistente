@@ -366,6 +366,85 @@ def pc_sonando(desde, hasta):
     return sum(p > UMBRAL_SALIDA for p in muestras) / len(muestras)
 
 
+# ---------- El micrófono silenciado en Windows ----------
+# Pasó: la tecla de silenciar micrófono (o una app de llamadas) lo dejó en silencio y Jarvis
+# "dejó de oír" sin decir nada: la calibración marcó ruido 0.0000 y nunca detectaba voz.
+_mic = {"vol": None, "avisado": False}
+
+
+def _volumen_mic():
+    """IAudioEndpointVolume del micrófono predeterminado (en el hilo vigía, COM en MTA)."""
+    if _mic["vol"] is None:
+        from ctypes import POINTER, cast
+
+        from comtypes import CLSCTX_ALL
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        dev = AudioUtilities.GetMicrophone()
+        interfaz = getattr(dev, "_dev", dev).Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        _mic["vol"] = cast(interfaz, POINTER(IAudioEndpointVolume))
+        _mic["vivos"] = [dev, interfaz]  # que nadie suelte los objetos COM a destiempo
+    return _mic["vol"]
+
+
+def microfono_silenciado():
+    """True/False, o None si no se puede saber."""
+    try:
+        return bool(_volumen_mic().GetMute())
+    except Exception:
+        _mic["vol"] = None
+        return None
+
+
+def activar_microfono():
+    try:
+        _volumen_mic().SetMute(0, None)
+        return not _volumen_mic().GetMute()
+    except Exception:
+        _mic["vol"] = None
+        return False
+
+
+def _sin_senal(segundos=20):
+    """El micrófono manda silencio DIGITAL (ni el ruido del cuarto): privacidad de Windows o
+    un dispositivo que no es el que usas."""
+    recientes = list(NIVELES)[-int(segundos / SEG_BLOQUE):]
+    return len(recientes) > 20 and max(recientes) < 1e-4
+
+
+def vigilar_microfono(avisar):
+    """Hilo: al arrancar, si el micrófono está silenciado lo reactiva (abriste Jarvis para
+    hablarle); si se silencia después, avisa una vez (pudo ser a propósito, en una llamada) y
+    la seña ☝ lo reactiva. avisar(texto) lo dice en voz alta."""
+    def bucle():
+        import ctypes
+        import sys
+        ctypes.windll.ole32.CoInitializeEx(None, 0)  # MTA, como el medidor de salida
+        if "comtypes" not in sys.modules:
+            sys.coinit_flags = 0
+        primera = True
+        while True:
+            silenciado = microfono_silenciado()
+            if silenciado and primera:
+                if activar_microfono():
+                    print("[Micrófono: estaba silenciado en Windows; lo reactivé]")
+                    avisar("Tu micrófono estaba silenciado en Windows; lo volví a activar para poder oírte.")
+            elif silenciado and not _mic["avisado"]:
+                _mic["avisado"] = True
+                print("[Micrófono: se silenció en Windows]")
+                avisar("Ojo: tu micrófono está silenciado y no te puedo oír. Haz la seña de te "
+                       "escucho, el dedo índice arriba, y lo reactivo.")
+            elif silenciado is False and _sin_senal() and not _mic["avisado"]:
+                _mic["avisado"] = True
+                print("[Micrófono: llega silencio total (¿privacidad de Windows u otro dispositivo?)]")
+                avisar("No me llega nada de sonido del micrófono. Revisa en la configuración de "
+                       "Windows que el micrófono tenga permiso y sea el correcto.")
+            elif silenciado is False and not _sin_senal():
+                _mic["avisado"] = False  # ya se arregló: si vuelve a pasar, se avisa otra vez
+            primera = False
+            time.sleep(20)
+    threading.Thread(target=bucle, daemon=True, name="vigia-microfono").start()
+
+
 def frase_de_la_pc(minimo=0.5):
     """True si la última frase grabada coincidió con audio saliendo de la computadora."""
     return pc_sonando(ULTIMA_ORDEN["inicio"], ULTIMA_ORDEN["fin"] or time.time()) >= minimo
@@ -442,6 +521,8 @@ def calibrar_umbral(minimo=0.0025, segundos=2.0):
     ambiente = niveles[len(niveles) // 4]
     umbral = max(minimo, ambiente * 2.5)
     print(f"[Micrófono calibrado: ruido de fondo {ambiente:.4f}, umbral {umbral:.4f}]")
+    if niveles[-1] < 1e-4:
+        print("[Ojo: el micrófono no manda NADA de sonido (¿silenciado o sin permiso?)]")
     return umbral
 
 

@@ -1671,3 +1671,35 @@ class AnalizarSituaciones(unittest.TestCase):
         self.assertEqual(cognicion.nivel("te cuento: me ofrecieron un trabajo en Monterrey"), "profundo")
         self.assertIn("PLATICANDO", cognicion.reglas("profundo", "no sé qué hacer con mi novia"))
         self.assertNotIn("PLATICANDO", cognicion.reglas("rapido", "abre spotify"))
+
+
+class MicrofonoSilenciado(unittest.TestCase):
+    """Pasó: el micrófono quedó silenciado en Windows y Jarvis 'dejó de oír' sin decir nada."""
+
+    def test_al_arrancar_lo_reactiva_y_avisa(self):
+        orig = (escuchar.microfono_silenciado, escuchar.activar_microfono)
+        estado = {"mudo": True}
+        escuchar.microfono_silenciado = lambda: estado["mudo"]
+        escuchar.activar_microfono = lambda: estado.update(mudo=False) or True
+        avisos = []
+        try:
+            escuchar.vigilar_microfono(avisos.append)
+            fin = time.time() + 3
+            while not avisos and time.time() < fin:
+                time.sleep(0.05)
+        finally:
+            escuchar.microfono_silenciado, escuchar.activar_microfono = orig
+        self.assertFalse(estado["mudo"])
+        self.assertIn("silenciado", avisos[0])
+
+    def test_silencio_digital(self):
+        guardado = list(escuchar.NIVELES)
+        try:
+            escuchar.NIVELES.clear()
+            escuchar.NIVELES.extend([0.0] * 100)
+            self.assertTrue(escuchar._sin_senal())
+            escuchar.NIVELES.extend([0.003] * 30)   # el ruido normal de un cuarto
+            self.assertFalse(escuchar._sin_senal())
+        finally:
+            escuchar.NIVELES.clear()
+            escuchar.NIVELES.extend(guardado)
