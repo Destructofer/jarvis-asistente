@@ -204,14 +204,15 @@ def _panel(root, titulo, resumen, opciones, on_cerrar):
 
 
 # ---------- Caja para escribir una orden ----------
-def pedir_texto(titulo, pista, al_enviar, al_cancelar):
-    """Enter envía (al_enviar(texto)); Esc o la X cancelan (al_cancelar()). Devuelve una Manija."""
+def pedir_texto(titulo, pista, al_enviar, al_cancelar, oculto=False):
+    """Enter envía (al_enviar(texto)); Esc o la X cancelan (al_cancelar()). Devuelve una Manija.
+    oculto=True: lo que se escribe se ve como puntos (contraseñas)."""
     m = Manija()
-    _ui(lambda root: _caja_texto(root, m, titulo, pista, al_enviar, al_cancelar))
+    _ui(lambda root: _caja_texto(root, m, titulo, pista, al_enviar, al_cancelar, oculto))
     return m
 
 
-def _caja_texto(root, m, titulo, pista, al_enviar, al_cancelar):
+def _caja_texto(root, m, titulo, pista, al_enviar, al_cancelar, oculto=False):
     ancho = 520
     v = _ventana(root, titulo)
     cont = tk.Frame(v, bg=BG, padx=20, pady=16)
@@ -220,7 +221,7 @@ def _caja_texto(root, m, titulo, pista, al_enviar, al_cancelar):
     tk.Label(cont, text=pista, font=(FUENTE, 9), fg=TEXTO_SUAVE, bg=BG, anchor="w").pack(fill="x", pady=(2, 10))
     entrada = tk.Entry(cont, font=(FUENTE, 12), bg="#262833", fg=TEXTO, insertbackground=TEXTO,
                        relief="flat", highlightthickness=1, highlightbackground="#3a3d52",
-                       highlightcolor=ACENTO)
+                       highlightcolor=ACENTO, show="•" if oculto else "")
     entrada.pack(fill="x", ipady=8)
     terminado = [False]
 

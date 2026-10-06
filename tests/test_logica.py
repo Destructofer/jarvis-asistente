@@ -1703,3 +1703,165 @@ class MicrofonoSilenciado(unittest.TestCase):
         finally:
             escuchar.NIVELES.clear()
             escuchar.NIVELES.extend(guardado)
+
+
+class CicloDelDia(unittest.TestCase):
+    """Resumen de la mañana, pendientes y avisos de noche (sin internet ni cámara)."""
+
+    def setUp(self):
+        import ciclo
+        import memoria
+        self.C = ciclo
+        self._db = memoria.DB_PATH
+        memoria.DB_PATH = Path(tempfile.mkdtemp()) / "prueba.db"
+        self._estado = dict(ciclo._estado)
+        ciclo._estado.update(cfg={"expositor": {"presentador": "Abraham Torres"}}, ofrecer=None,
+                             libre=None, noche=None)
+
+    def tearDown(self):
+        import memoria
+        memoria.DB_PATH = self._db
+        self.C._estado.clear()
+        self.C._estado.update(self._estado)
+
+    def test_pendientes(self):
+        ayer = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        self.C.anotar_pendiente("terminar el reporte", para=ayer)
+        self.C.anotar_pendiente("pagar la luz", para="mañana")
+        self.assertEqual([p["texto"] for p in self.C.pendientes_para()], ["terminar el reporte"])
+        self.assertIn("reporte", self.C.ver_pendientes())
+        self.assertIn("Tachado", self.C.completar_pendiente("ya terminé el reporte"))
+        self.assertEqual(self.C.pendientes_para(), [])
+        manana = datetime.date.today() + datetime.timedelta(days=1)
+        self.assertEqual([p["texto"] for p in self.C.pendientes_para(manana)], ["pagar la luz"])
+
+    def test_fechas_dichas(self):
+        hoy = datetime.date(2026, 10, 6)  # martes
+        self.assertEqual(self.C._fecha("mañana", hoy), datetime.date(2026, 10, 7))
+        self.assertEqual(self.C._fecha("hoy", hoy), hoy)
+        self.assertEqual(self.C._fecha("el viernes", hoy), datetime.date(2026, 10, 9))
+        self.assertEqual(self.C._fecha("martes", hoy), datetime.date(2026, 10, 13))  # el próximo
+
+    def test_resumen_completo_y_en_orden(self):
+        ayer = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        self.C.anotar_pendiente("terminar el reporte", para=ayer)
+        texto = self.C.armar_resumen(datetime.datetime.now().replace(hour=8, minute=30),
+                                     clima_fn=lambda: "En Cuautitlán hace 16 grados.",
+                                     whatsapp_fn=lambda: "En WhatsApp tienes 1 chat sin responder: Mamá.",
+                                     correo_fn=lambda: "En tu correo hay 1 importante: de salud, Hospital.")
+        self.assertTrue(texto.startswith("Buenos días, Abraham. Son las 8:30 de la mañana."))
+        orden = [texto.index(x) for x in ("16 grados", "terminar el reporte", "Mamá", "Hospital")]
+        self.assertEqual(orden, sorted(orden))
+
+    def test_resumen_aunque_falle_algo(self):
+        def falla():
+            raise OSError("sin internet")
+        texto = self.C.armar_resumen(datetime.datetime.now().replace(hour=15), clima_fn=falla,
+                                     whatsapp_fn=lambda: "", correo_fn=lambda: "")
+        self.assertTrue(texto.startswith("Buenas tardes"))
+
+    def test_una_vez_al_dia_y_no_de_noche(self):
+        dia = datetime.datetime.now().replace(hour=9, minute=0)
+        self.assertTrue(self.C.resumen_pendiente_hoy(dia))
+        self.C._ajuste("resumen", self.C.dia_logico(dia).isoformat())
+        self.assertFalse(self.C.resumen_pendiente_hoy(dia))
+        self.assertFalse(self.C.resumen_pendiente_hoy(dia.replace(hour=23, minute=30)))
+        self.assertTrue(self.C.es_de_noche(dia.replace(hour=23, minute=30)))
+        self.assertTrue(self.C.es_de_noche(dia.replace(hour=2)))
+        self.assertFalse(self.C.es_de_noche(dia.replace(hour=14)))
+
+    def test_avisos_de_noche(self):
+        import cansancio
+        dicho = []
+        self.C._estado.update(ofrecer=dicho.append, libre=lambda: True)
+        orig = (cansancio.encender, cansancio.estado, self.C._inactivo_seg)
+        cansancio.encender = lambda activo=True: None
+        estado = {"cansado": False, "motivo": "", "perclos": 0.0, "bostezos": 0, "muestras": 50}
+        cansancio.estado = lambda: dict(estado)
+        self.C._inactivo_seg = lambda: 5
+        try:
+            noche = datetime.datetime.now().replace(hour=23, minute=10)
+            self.C.revisar(noche)
+            self.assertEqual(len(dicho), 1)
+            self.assertIn("Son las 11:10 de la noche", dicho[0])
+            self.C.revisar(noche)                       # no repite enseguida
+            self.assertEqual(len(dicho), 1)
+            self.C._estado["ultimo_aviso_noche"] -= 15 * 60
+            estado.update(cansado=True, motivo="los ojos se te cierran seguido")
+            self.C.revisar(noche)                       # pero si te ve cansado, sí
+            self.assertEqual(len(dicho), 2)
+            self.assertIn("te noto cansado", dicho[1])
+        finally:
+            cansancio.encender, cansancio.estado, self.C._inactivo_seg = orig
+
+
+class CansancioPorCamara(unittest.TestCase):
+    def test_ojos_cerrados_y_bostezos(self):
+        import cansancio
+        c = cansancio.Cansancio()
+        t = 1000.0
+        for i in range(120):                 # despierto: parpadeos normales
+            c.agregar(t + i * 0.25, 0.9 if i % 20 == 0 else 0.1, 0.1, 0.05)
+        self.assertFalse(c.estado(t + 30)["cansado"])
+        c2 = cansancio.Cansancio()
+        for i in range(120):                 # ojos cerrados un 30 % del tiempo
+            cerrado = i % 10 < 3
+            c2.agregar(t + i * 0.25, 0.8 if cerrado else 0.1, 0.8 if cerrado else 0.1, 0.05)
+        est = c2.estado(t + 30)
+        self.assertTrue(est["cansado"])
+        self.assertIn("ojos", est["motivo"])
+        c3 = cansancio.Cansancio()
+        for bostezo in (0, 60):              # dos bostezos de 2 s en un minuto
+            for i in range(10):
+                c3.agregar(t + bostezo + i * 0.25, 0.1, 0.1, 0.8 if i < 8 else 0.1)
+        self.assertEqual(c3.estado(t + 70)["bostezos"], 2)
+        self.assertTrue(c3.estado(t + 70)["cansado"])
+
+
+class CorreoImportante(unittest.TestCase):
+    def test_de_mas_a_menos_importante(self):
+        import correo
+        ejemplos = [("Amazon <x@amazon.com.mx>", "Tu pedido fue enviado"),
+                    ("OCC Mundial <alertas@occ.com.mx>", "Nuevas vacantes"),
+                    ("GBM <noreply@gbm.com>", "Rendimiento de tu portafolio"),
+                    ("BBVA <avisos@bbva.mx>", "Tu estado de cuenta"),
+                    ("BBVA <alertas@bbva.mx>", "Alerta de seguridad: cargo no reconocido"),
+                    ("Hospital Ángeles <citas@hospitalesangeles.com>", "Tu cita médica"),
+                    ("Computrabajo <x@computrabajo.com>", "Te invitaron a una entrevista")]
+        cs = [{"de": d, "asunto": a, "ts": time.time() - i, "leido": False} for i, (d, a) in enumerate(ejemplos)]
+        orden = [(c["categoria"], c["asunto"]) for c in correo.ordenar(cs)]
+        self.assertEqual([o[0] for o in orden], ["salud", "banco", "banco", "inversiones", "empleo", "empleo"])
+        self.assertIn("Alerta", orden[1][1])        # lo urgente primero
+        self.assertIn("entrevista", orden[4][1])
+        self.assertNotIn("Amazon", " ".join(a for _c, a in orden))
+
+
+class WhatsAppSinResponder(unittest.TestCase):
+    def test_filas_y_pendientes(self):
+        import whatsapp
+        f = whatsapp.interpretar_fila
+        chats = [f(["Mamá", "10:32", "¿Ya llegaste?", "2 mensajes no leídos"]),
+                 f(["Equipo", "9:15", "Tú: ya subí el reporte", "Leído"]),
+                 f(["Juan", "ayer", "¿Mañana a qué hora?"]),
+                 f(["Banco", "02/10/2026", "Tu código es 1234"])]
+        self.assertEqual(chats[0]["no_leidos"], 2)
+        self.assertTrue(chats[1]["de_mi"])
+        nombres = [c["nombre"] for c in whatsapp.sin_responder(chats)]
+        self.assertEqual(nombres, ["Mamá", "Juan"])   # ni el que ya contestaste ni el viejo
+
+
+class ClimaDicho(unittest.TestCase):
+    def test_describe_con_consejos(self):
+        import clima
+        d = {"current": {"time": "2026-10-06T09:00", "temperature_2m": 16.4, "apparent_temperature": 16.0,
+                         "weather_code": 2},
+             "hourly": {"time": ["2026-10-06T10:00", "2026-10-06T16:00"], "precipitation_probability": [20, 80]},
+             "daily": {"time": ["2026-10-06", "2026-10-07"], "weather_code": [61, 3],
+                       "temperature_2m_max": [20.1, 21], "temperature_2m_min": [8.2, 9],
+                       "precipitation_probability_max": [80, 10], "uv_index_max": [5, 4]}}
+        texto = clima.describir(d, "Cuautitlán")
+        self.assertIn("En Cuautitlán hace 16 grados", texto)
+        self.assertIn("80% de probabilidad de lluvia como a las 4 de la tarde", texto)
+        self.assertIn("paraguas", texto)
+        self.assertIn("abrígate", texto)
+        self.assertIn("Mañana: 21 grados", texto)

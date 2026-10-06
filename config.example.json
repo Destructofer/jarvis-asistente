@@ -376,5 +376,13 @@
   "habitos": {
     "activo": true,
     "sugerir": true
+  },
+  "ciclo": {
+    "activo": true,
+    "resumen_manana": true,
+    "hora_manana": "5:00",
+    "hora_noche": "23:00",
+    "avisos_noche": true,
+    "detectar_cansancio": true
   }
 }

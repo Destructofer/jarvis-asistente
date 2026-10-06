@@ -23,6 +23,7 @@ from skills import Callado, skill
 puede_hablar = None   # fn() -> bool: Jarvis libre (sin orden en curso ni voz sonando)
 intervenir = None     # fn(texto): lo dice, lo anota en la conversación y escucha la respuesta
 actividad = None      # fn() -> momento de la última orden (para saber si están platicando)
+antes_de_saludar = None  # fn() -> True si otro (el resumen de la mañana) saludará en su lugar
 
 _estado = {"hilo": None, "manual": None, "error": "", "ultimo_saludo": 0.0, "vista": None,
            "ultimo_vistazo": 0.0}
@@ -153,6 +154,8 @@ def _saludar(fuera):
     import expositor
     if expositor.ACTIVO:
         return  # frente al público no se saluda a uno solo
+    if antes_de_saludar is not None and antes_de_saludar():
+        return  # toca el resumen de la mañana: ya incluye el saludo (sin repetirlo)
     limite = time.time() + 10
     while time.time() < limite:
         if puede_hablar is None or puede_hablar():

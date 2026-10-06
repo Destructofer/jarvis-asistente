@@ -16,7 +16,8 @@
 > (navegador, música y apps preferidas, e instrucciones permanentes) e `interaccion.py` (elegir
 > lo que se ve en pantalla, controlar el video o la música, saltar anuncios, escribir en campos), `personalidades.py`
 > (mirrey, godín, abuelita, coach... la elegida se recuerda) y `habitos.py` (aprende tus rutinas
-> y te ofrece lo que sueles hacer).
+> y te ofrece lo que sueles hacer), `ciclo.py` + `clima.py` + `correo.py` + `whatsapp.py` +
+> `cansancio.py` (resumen de la mañana con clima, pendientes, WhatsApp y Gmail; avisos de noche).
 
 # Genesis
 

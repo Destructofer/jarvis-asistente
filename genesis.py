@@ -24,6 +24,9 @@ import expositor
 import gestos  # manos por la cámara de la PC, estilo Iron Man (MediaPipe, local)
 import graph  # noqa: F401  (registra las skills de lectura de archivos de Teams)
 import habitos  # aprende tus rutinas (música al trabajar, apps a cierta hora) y te las ofrece
+import ciclo  # el día y la noche: resumen de la mañana y avisos de noche
+import clima  # noqa: F401  (registra la skill del clima)
+import correo  # tu Gmail ordenado por importancia
 import hud
 import interaccion  # elegir lo que se ve (el primer video...), controlar el video, anuncios
 import mantenimiento
@@ -39,6 +42,7 @@ import realidad  # modo realidad aumentada con las manos
 import recordatorios
 import skills
 import teams  # noqa: F401  (registra las skills de Microsoft Teams)
+import whatsapp  # noqa: F401  (los chats de WhatsApp sin responder)
 import escuchar
 import voz
 from escuchar import esperar_palabra
@@ -210,6 +214,13 @@ ATAJOS = {
     "bloquear_pantalla": {"bloquea la pantalla", "bloquear pantalla", "bloquea el equipo",
                           "bloquea la computadora", "bloquea la compu"},
     "cancelar_apagado": {"cancela el apagado", "cancelar apagado", "cancela el reinicio"},
+    "resumen_del_dia": {"dame mi resumen", "dame mi resumen del dia", "resumen del dia",
+                        "ponme al dia", "como viene el dia", "como viene mi dia", "mi resumen"},
+    "clima": {"como esta el clima", "que clima hace", "como esta el tiempo", "va a llover",
+              "va a llover hoy", "que temperatura hace", "el clima", "clima", "pronostico del clima",
+              "como estara el clima manana", "va a llover manana"},
+    "ver_pendientes": {"que tengo pendiente", "mis pendientes", "que me quedo pendiente",
+                       "que quedo pendiente de ayer", "que me falta"},
     "que_suena": {"que cancion es esta", "que cancion es", "que cancion suena", "que suena",
                   "que esta sonando", "como se llama esta cancion", "como se llama la cancion",
                   "que video es este", "que estoy escuchando", "que cancion esta sonando"},
@@ -364,6 +375,16 @@ GRUPOS = [
     (r"personalidad|modo |habla(?:me)? como|actua como|se tu mismo|vuelve a ser|como eres|"
      r"mirrey|godin|fresa|chavorruco|abuelita|norteno|coach|terapeuta|narrador|sarcastico|zen",
      ["cambiar_personalidad", "listar_personalidades"]),
+    (r"clima|tiempo|llover|lluvia|temperatura|pronostico|calor|frio|grados|paraguas|soleado",
+     ["clima"]),
+    (r"correo|gmail|mail|email|banco|bbva|banorte|santander|occ|computrabajo|vacante|hospital|"
+     r"gbm|inversion|me escribio|me llego",
+     ["correos_importantes", "conectar_gmail"]),
+    (r"whats|wasap|guasap|mensaje|me escribio|chat|contestar|responder",
+     ["whatsapp_pendientes"]),
+    (r"pendiente|me quedo|me falta|tengo que|manana tengo|anota|ya termine|tacha|resumen|ponme al dia|"
+     r"como viene el dia|buenos dias",
+     ["anotar_pendiente", "ver_pendientes", "completar_pendiente", "resumen_del_dia"]),
     (r"habito|rutina|costumbre|sueles|siempre hago|sugier|sugerencia|aprendiste de mi|que sabes de mi",
      ["mis_habitos", "sugerencias_habitos", "olvidar_habitos"]),
     (r"rutina|demo",
@@ -1490,6 +1511,11 @@ GUIAS = {
                             "(mirrey, abuelita, coach, más serio, normal...), usa cambiar_personalidad.",
     "mis_habitos": "Si pregunta qué hábitos o rutinas suyas conoces, usa mis_habitos; si no quiere "
                    "que le sugieras cosas, sugerencias_habitos con activar=false.",
+    "anotar_pendiente": "Si dice que algo le quedó pendiente o que tiene que hacer algo después, "
+                        "anótalo con anotar_pendiente (por defecto para mañana) y confírmalo en "
+                        "una frase; si dice que ya lo hizo, completar_pendiente.",
+    "correos_importantes": "Para sus correos importantes usa correos_importantes; si no está "
+                           "conectado, ofrécele conectar_gmail.",
     "calendario": "Si la pregunta es de fechas (qué día cae, cuántos días faltan, qué fecha será), "
                   "usa calendario; nunca lo calcules de memoria.",
 }
@@ -1609,7 +1635,9 @@ def _entregar(cfg, turno, resultado, herramientas=None):
         return
     if not isinstance(resultado, skills.Fallo) and usadas:
         texto = personalidades.adornar(texto, usadas)  # "Va, mi rey. Abriendo Spotify."
-    turno.decir(_para_voz(texto))
+    # El resumen del día, los correos y WhatsApp se dicen completos (los pediste para oírlos)
+    completos = {"resumen_del_dia", "correos_importantes", "whatsapp_pendientes", "clima"}
+    turno.decir(texto if completos & set(usadas or ()) else _para_voz(texto))
 
 
 def _precalentar(cfg):
@@ -1928,6 +1956,11 @@ def main(persistente=False):
         print(f"{_nombre(cfg)} (por su cuenta): {texto}")
         intervenir(cfg, texto, publico=False)
         return True
+    correo.hablar = lambda texto: avisar(cfg, texto)
+    presencia.antes_de_saludar = ciclo.resumen_pendiente_hoy  # el resumen de la mañana ya saluda
+    ciclo.iniciar(cfg, ofrecer=ofrecer_habito,
+                  libre=lambda: puede_hablar_por_su_cuenta() and not presentando(cfg)
+                  and not en_conversacion())
     habitos.iniciar(cfg, ofrecer=ofrecer_habito,
                     libre=lambda: puede_hablar_por_su_cuenta() and not presentando(cfg)
                     and not en_conversacion())

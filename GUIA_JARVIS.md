@@ -309,6 +309,28 @@ largos se analizan por partes. Todo en `documentos.py`.
 
 En `entorno.py`. Usa la misma fuente de cámara que "¿qué ves?" (`camara.fuente`).
 
+## El día y la noche (`ciclo.py`)
+
+**En la mañana**, la primera vez que te ve (o que usas la computadora) te da el resumen del día:
+saludo y hora, el **clima** de donde estás y el pronóstico (con consejos: paraguas, abrígate,
+bloqueador), lo que te **quedó pendiente** de antes y lo de hoy, tus recordatorios, los chats de
+**WhatsApp** sin responder de las últimas 24 h (nombre del chat y último mensaje) y tus **correos
+importantes** de más a menos: salud, bancos, inversiones, empleo y escuela. También: "dame mi
+resumen", "¿cómo está el clima?", "¿qué tengo pendiente?".
+
+**En la noche** (desde `ciclo.hora_noche`, 23:00), si sigues en la computadora te dice la hora y,
+si la cámara te ve **cansado** (ojos que se cierran seguido o bostezos, medido en la PC con
+MediaPipe, sin mandar fotos), te propone descansar. Lo que le digas que quedó pendiente ("me
+quedó pendiente el reporte") se anota y te lo dice a la mañana siguiente.
+
+Conexiones:
+- **Ubicación:** la de Windows (Configuración > Privacidad > Ubicación activada). Sin ella, por IP.
+- **Gmail:** "conecta mi Gmail": te abre la página de Google para crear una *contraseña de
+  aplicación* (requiere la verificación en dos pasos) y una ventanita para pegarla. Solo lee;
+  se guarda cifrada (`datos/gmail.json`).
+- **WhatsApp:** la app de escritorio con la sesión iniciada. Jarvis solo lee la lista de chats
+  (nunca abre uno, para no marcarlo como leído).
+
 ## Personalidades (`personalidades.py`)
 
 Como los modos de voz de Grok en un Tesla, pero con sabor mexicano: "Jarvis, ponte en modo
