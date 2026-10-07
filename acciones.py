@@ -31,7 +31,7 @@ POR_HERRAMIENTA = {
                  "listar_rutinas", "listar_microfonos", "teams_leer_pantalla", "teams_listar_clases",
                  "teams_buscar_archivos_clase", "leer_ventana", "youtube", "desplazar",
                  "teams_desplazar", "explicar_pantalla", "listar_en_pantalla", "mis_habitos",
-                 "listar_personalidades", "clima", "correos_importantes", "whatsapp_pendientes",
+                 "listar_personalidades", "que_hice", "listar_combos", "clima", "correos_importantes", "whatsapp_pendientes",
                  "ver_pendientes", "resumen_del_dia", "estado_nube",
                  "que_suena"},
     "pensando": {"analizar_documento", "teams_analizar_tarea", "explicar_diapositiva",
@@ -50,7 +50,8 @@ POR_HERRAMIENTA = {
                    "controlar_reproduccion", "escribir_en", "saltar_anuncios",
                    "cambiar_personalidad", "sugerencias_habitos", "olvidar_habitos",
                    "sugerencia_rechazada", "anotar_pendiente", "completar_pendiente",
-                   "conectar_gmail", "conectar_supabase", "respaldar_ahora"},
+                   "conectar_gmail", "conectar_supabase", "respaldar_ahora", "combo_juego", "entrenar_detector",
+                   "guardar_combo", "lado_jugador"},
     "tecnologia": {"spotify", "musica", "conectar_spotify", "teams_abrir", "teams_click",
                    "teams_enviar_mensaje", "conectar_archivos_teams", "modo_realidad",
                    "modo_expositor", "gestos"},
@@ -59,7 +60,9 @@ POR_HERRAMIENTA = {
 }
 _HERRAMIENTA_A_CATEGORIA = {h: c for c, hs in POR_HERRAMIENTA.items() for h in hs}
 
-_ETIQUETA = re.compile(r"\[\s*acci[oó]n\s*:\s*([^\]]{1,30})\]", re.I)
+# También las mal formadas que a veces escribe el modelo: "[ACCION]pensando]", "[Acción - saludo]",
+# "[ACCION]" sola. Sin esto se quedaban en el texto (y en la voz)
+_ETIQUETA = re.compile(r"\[\s*acci[oó]n\s*[:\]\-=]?\s*([^\]\[\n]{0,30})\]", re.I)
 _ERROR = re.compile(r"\b(no pude|no logr[eé]|error|no encontr[eé]|no entend[ií]|no te escuch[eé]|"
                     r"no conozco|no existe|fall[oó])\b", re.I)
 

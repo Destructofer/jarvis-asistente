@@ -1955,11 +1955,14 @@ class Escena:
         vivas = []
         for o in self.ondas:
             x, y, t0, color, rmax = o
-            p = (ahora - t0) / 0.45
+            # acotado: una onda creada con un reloj un poco adelantado daba p < 0 y un radio
+            # negativo, y cv2.circle tronaba el cuadro
+            p = min(max((ahora - t0) / 0.45, 0.0), 1.0)
             if p >= 1:
                 continue
             vivas.append(o)
-            r = int(6 + rmax * (1 - (1 - p) ** 3))
+            x, y = int(x), int(y)
+            r = max(1, int(6 + rmax * (1 - (1 - p) ** 3)))
             x0, y0, x1, y1 = max(0, x - r - 4), max(0, y - r - 4), min(W, x + r + 5), min(H, y + r + 5)
             if x1 - x0 < 2 or y1 - y0 < 2:
                 continue

@@ -2141,3 +2141,108 @@ class SupabaseAutomatico(unittest.TestCase):
         ok, aviso = self.N.configurar_automatico("sbp_" + "a" * 40, "mi frase larga", avisar=lambda t: None)
         self.assertFalse(ok)
         self.assertIn("máximo", aviso)
+
+
+class HonestidadSobreSusAcciones(unittest.TestCase):
+    """Jarvis le dijo "claro, aquí ando jugando por ti" con Mortal Kombat sin mandar una tecla."""
+
+    def setUp(self):
+        import bitacora
+        self.B = bitacora
+        self._antes = list(bitacora._registro)
+        bitacora._registro.clear()
+
+    def tearDown(self):
+        self.B._registro.clear()
+        self.B._registro.extend(self._antes)
+
+    def test_detecta_la_pregunta(self):
+        for q in ("estás jugando por mí?", "Jarvis, ¿estás jugando por mí?", "¿fuiste tú el que movió el mouse?",
+                  "¿tú tomaste el control?"):
+            self.assertTrue(self.B.es_pregunta(q), q)
+        for q in ("Pon música mientras estoy jugando", "¿Tienes el control de Spotify?", "abre Mortal Kombat"):
+            self.assertFalse(self.B.es_pregunta(q), q)
+        self.assertEqual(genesis.atajo_que_hice("¿estás jugando por mí?"), ("que_hice", {}))
+
+    def test_contesta_con_lo_que_de_verdad_hizo(self):
+        self.assertTrue(self.B.que_hice().startswith("No, no fui yo"))
+        self.assertIn("NO ejecutaste", self.B.resumen())
+        self.B.anotar("clima", {})                       # no mueve nada en la PC
+        self.assertTrue(self.B.que_hice().startswith("No"))
+        self.B.anotar("escribir_en", {"texto": "hola"})
+        self.assertTrue(self.B.que_hice().startswith("Sí"))
+        self.assertIn("escribir_en", self.B.resumen())
+        # lo de hace más de 10 minutos ya no cuenta
+        self.B._registro.clear()
+        self.B._registro.append((time.time() - 3600, "escribir_en", {}, True))
+        self.assertTrue(self.B.que_hice().startswith("No"))
+
+    def test_etiquetas_mal_formadas_no_se_dicen(self):
+        import acciones
+        self.assertEqual(acciones.separar("Obvio, mi rey. [ACCION]pensando] [ACCION: saludo]"),
+                         ("Obvio, mi rey.", "saludo"))
+        self.assertEqual(acciones.separar("Listo [Acción - ejecutando]"), ("Listo", "ejecutando"))
+        self.assertEqual(acciones.separar("hola [ACCION]")[0], "hola")
+
+
+class JarvisJuega(unittest.TestCase):
+    """juegos.py: botones de verdad (control virtual / teclado) y combos por voz."""
+
+    def setUp(self):
+        import juegos
+        self.J = juegos
+        self._orig = (juegos.ARCHIVO, juegos._juego_al_frente)
+        juegos.ARCHIVO = Path(tempfile.mkdtemp()) / "juegos.json"
+
+    def tearDown(self):
+        self.J.ARCHIVO, self.J._juego_al_frente = self._orig
+
+    def test_notacion_en_espanol_y_en_siglas(self):
+        I = self.J.interpretar
+        self.assertEqual(I("atrás adelante dos"), [["B"], ["F"], ["2"]])
+        self.assertEqual(I("B, F, 2"), I("atrás, adelante y dos"))     # "y" no es "al mismo tiempo"
+        self.assertEqual(I("abajo más bloqueo, cuatro"), [["D", "BL"], ["4"]])
+        self.assertEqual(I("D+BL"), [["D", "BL"]])
+        with self.assertRaises(ValueError):
+            I("abre youtube")
+        self.assertTrue(self.J.es_notacion("Jarvis, atrás adelante dos"))
+        self.assertFalse(self.J.es_notacion("abre youtube"))
+        self.assertFalse(self.J.es_notacion("abajo"))                  # una dirección sola no basta
+
+    def test_adelante_y_atras_segun_el_lado(self):
+        p = self.J.PERFILES["mortal_kombat"]
+        self.assertEqual(self.J.resolver(["F", "1"], p, "izquierda"), ["DPAD_R", "X"])
+        self.assertEqual(self.J.resolver(["F", "1"], p, "derecha"), ["DPAD_L", "X"])
+        teclado = dict(p, control="teclado")
+        self.assertEqual(self.J.resolver(["B", "BL"], teclado, "izquierda"), ["A", "SPACE"])
+
+    def test_ejecuta_con_el_ritmo_del_juego(self):
+        vistos = []
+        p = dict(self.J.PERFILES["mortal_kombat"], cuadros=1, hueco=1)
+        t0 = time.perf_counter()
+        self.J.ejecutar(self.J.interpretar("B F 2 espera 4"), p, "izquierda",
+                        poner=lambda e, abajo: vistos.append((tuple(e), abajo)))
+        self.assertEqual([e for e, abajo in vistos if abajo], [("DPAD_L",), ("DPAD_R",), ("Y",), ("B",)])
+        self.assertEqual(len([1 for _, abajo in vistos if not abajo]), 4)   # todo se suelta
+        self.assertGreater(time.perf_counter() - t0, 0.2)                  # la espera sí espera
+
+    def test_nunca_en_juegos_en_linea(self):
+        self.assertTrue(self.J.bloqueado("cod.exe"))
+        self.assertTrue(self.J.bloqueado("destiny2.exe"))
+        self.assertTrue(self.J.bloqueado("VALORANT-Win64-Shipping.exe"))
+        self.assertFalse(self.J.bloqueado("MK11.exe"))
+        self.assertFalse(self.J.bloqueado("javaw.exe"))
+        self.J._juego_al_frente = lambda: ("cod.exe", "Call of Duty")
+        self.assertIsInstance(self.J.combo_juego("B F 2"), skills.Fallo)
+        self.assertIsNone(genesis.atajo_juego("atrás adelante dos"))
+
+    def test_combos_guardados_por_voz(self):
+        self.J._juego_al_frente = lambda: ("mk11.exe", "Mortal Kombat 11")
+        self.assertEqual(self.J.perfil_de("mk11.exe"), "mortal_kombat")
+        self.assertIn("Gancho", self.J.guardar_combo("Gancho", "atrás adelante dos"))
+        self.assertEqual(genesis.atajo_juego("Jarvis, haz el gancho"), ("combo_juego", {"secuencia": "gancho"}))
+        self.assertEqual(genesis.atajo_juego("atrás adelante dos"), ("combo_juego", {"secuencia": "atras adelante dos"}))
+        self.assertIsNone(genesis.atajo_juego("¿cómo te llamas?"))
+        self.J._juego_al_frente = lambda: ("code.exe", "Visual Studio Code")   # sin juego al frente
+        self.assertIsNone(genesis.atajo_juego("atrás adelante dos"))
+

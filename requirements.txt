@@ -73,6 +73,7 @@ winrt-Windows.Foundation==3.2.1         # adelantar y "¿qué canción es esta?"
 winrt-Windows.Foundation.Collections==3.2.1  # Spotify o cualquier reproductor (interaccion.py)
 winrt-Windows.Media.Control==3.2.1
 winrt-Windows.Devices.Geolocation==3.2.1   # tu ubicación (GPS / Wi-Fi) para el clima (clima.py)
+vgamepad==0.1.0   # control virtual de Xbox para jugar (juegos.py); instala el driver ViGEmBus
 cryptography==46.0.3       # respaldos cifrados con tu frase antes de subirlos a Supabase (respaldo.py)
 
 # Opcional: Whisper en la GPU NVIDIA (mucho más rápido) → pip install -r requirements-gpu.txt

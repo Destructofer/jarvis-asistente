@@ -464,6 +464,29 @@ y lo empieza a usar. Puedes tener varios personajes: "Jarvis, usa el avatar de I
 clasifica mal un GIF: "Jarvis, ese GIF es de celebrando". Detalles y categorías en
 `vaultboy/README.md`. Sin avatares se ve el reactor azul de siempre (`hud.estilo`).
 
+## Jarvis juega (`juegos.py`) y nunca dice que hizo lo que no hizo (`bitacora.py`)
+
+**Botones de verdad.** Jarvis aprieta botones en el juego que está al frente con un **control
+virtual de Xbox** (`vgamepad` + driver ViGEmBus; el juego lo ve como un control más) o con el
+teclado por códigos de escaneo (lo que leen los juegos). Si tienes otro control conectado, el juego
+puede tomar el virtual como jugador 2: desconecta el tuyo o pon `"control": "teclado"` en el perfil.
+
+**Combos por voz**, al instante y sin pasar por el modelo: "atrás adelante dos", "abajo más
+bloqueo", o el nombre de un combo guardado ("guarda el combo gancho: atrás adelante dos" → "haz el
+gancho"). Notación: U/D/F/B, 1-4, BL, THROW, FLIP, AMP, "+" juntos, "espera". Adelante y atrás se
+voltean según tu lado ("estoy del lado derecho"). Para un fatality que no esté guardado, Jarvis
+busca la secuencia en internet en vez de inventarla. Perfiles, combos y lado en
+`datos/juegos.json`.
+
+**Nunca en juegos en línea competitivos** (Call of Duty, Destiny, Valorant, Fortnite, Apex...):
+un bot ahí es trampa contra personas reales y su anti-trampas banea la cuenta.
+
+**Honestidad.** Cada herramienta que ejecuta queda en la bitácora de la sesión. "¿Estás jugando
+por mí?", "¿fuiste tú?", "¿tú moviste el mouse?" se contestan con esa bitácora, sin el modelo; y
+en cualquier otra pregunta el modelo recibe la lista de lo que de verdad hizo en los últimos 10
+minutos. Así ya no pasa lo de Mortal Kombat: decía "claro, aquí ando jugando por ti" sin haber
+mandado una sola tecla.
+
 ## Qué le puedes decir
 
 | Dices | Qué pasa |

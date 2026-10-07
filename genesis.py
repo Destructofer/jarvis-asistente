@@ -23,6 +23,9 @@ import entorno  # escanear_entorno y vigilar_camara
 import expositor
 import gestos  # manos por la cámara de la PC, estilo Iron Man (MediaPipe, local)
 import graph  # noqa: F401  (registra las skills de lectura de archivos de Teams)
+import bitacora  # lo que Jarvis de verdad hizo (para no afirmar lo que no hizo)
+import juegos  # Jarvis aprieta botones de verdad en el juego (control virtual de Xbox o teclado)
+import para_mi  # red neuronal local: ¿lo que se dijo sin llamarlo era para Jarvis?
 import habitos  # aprende tus rutinas (música al trabajar, apps a cierta hora) y te las ofrece
 import ciclo  # el día y la noche: resumen de la mañana y avisos de noche
 import clima  # noqa: F401  (registra la skill del clima)
@@ -137,7 +140,12 @@ def _no_es_para_mi(cfg, texto):
     palabras = t.split()
     if len(palabras) <= 4 and "?" not in texto and not CORTA_PREGUNTA.search(t):
         return "Frase corta que no me pide nada"
-    if not cerebro.nube_disponible(cfg):
+    # La red local (para_mi.py, ~30 ms): si está segura de que no era para él, se calla sin
+    # gastar la nube; sin internet, si está segura de que sí, contesta el modelo local
+    veredicto = para_mi.decidir(texto)
+    if veredicto == "no":
+        return "La red dice que no era para mí"
+    if not cerebro.nube_disponible(cfg) and veredicto != "si":
         return "Sin la nube no adivino si era para mí (el modelo local contesta todo)"
     return ""
 
@@ -382,6 +390,11 @@ GRUPOS = [
     (r"personalidad|modo |habla(?:me)? como|actua como|se tu mismo|vuelve a ser|como eres|"
      r"mirrey|godin|fresa|chavorruco|abuelita|norteno|coach|terapeuta|narrador|sarcastico|zen",
      ["cambiar_personalidad", "listar_personalidades"]),
+    (r"jugando|juegas|jugaste|fuiste tu|tomaste el control|que hiciste|moviste|tecleaste|controlando",
+     ["que_hice"]),
+    (r"detector|reentrena|entrena|cuando te hablo|aprende cuando", ["entrenar_detector"]),
+    (r"combo|fatality|brutality|especial|golpe|patada|juego|pelea|mortal|kombat|lado (izquierdo|derecho)|del lado",
+     ["combo_juego", "guardar_combo", "listar_combos", "lado_jugador", "buscar_web"]),
     (r"clima|tiempo|llover|lluvia|temperatura|pronostico|calor|frio|grados|paraguas|soleado",
      ["clima"]),
     (r"correo|gmail|mail|email|banco|bbva|banorte|santander|occ|computrabajo|vacante|hospital|"
@@ -844,6 +857,33 @@ PIDE_PERSONALIDAD = re.compile(
     r"conviertete en|vuelve a ser|se tu mismo|regresa a ser|cambia(?:te)? a)\b")
 
 
+def atajo_que_hice(texto):
+    """'¿estás jugando por mí?', '¿fuiste tú?': se contesta con la bitácora, sin el modelo (el
+    modelo le daba la razón al usuario: "claro, aquí ando jugando por ti" sin una sola tecla)."""
+    return ("que_hice", {}) if bitacora.es_pregunta(texto) else None
+
+
+def atajo_juego(texto):
+    """Con un juego de peleas al frente: "atrás adelante dos" o "haz el gancho" (un combo
+    guardado) se tiran al instante, sin el modelo (en una pelea cada segundo cuenta)."""
+    try:
+        proceso, _ = juegos._juego_al_frente()
+    except Exception:
+        return None
+    if not proceso or juegos.bloqueado(proceso):
+        return None
+    clave = juegos.perfil_de(proceso)
+    if clave == "generico" and not juegos.combos(clave):
+        return None
+    nombre = juegos.combo_en_texto(texto, clave)
+    if nombre:
+        return "combo_juego", {"secuencia": nombre}
+    if juegos.es_notacion(texto):
+        t = re.sub(r"^\s*(jarvis\W*)?(haz|tira|mete|echa|lanza|aplica)?\s*", "", skills._norm(texto))
+        return "combo_juego", {"secuencia": t.strip(" .!?¿¡")}
+    return None
+
+
 def atajo_personalidad(texto):
     """'ponte en modo mirrey', 'cambia tu personalidad a abuelita', 'vuelve a ser normal': al
     instante y sin el modelo (si no, en plena personalidad el modelo a veces contestaba "¡va!"
@@ -1279,6 +1319,8 @@ def ejecutar_herramienta(cfg, nombre, args):
             return skills.Fallo("El usuario canceló la acción. No se ejecutó nada.")
     print(f"[Skill] {nombre} {args}")
     resultado = skills.ejecutar(nombre, args)
+    if nombre != "que_hice":
+        bitacora.anotar(nombre, args, not isinstance(resultado, skills.Fallo))
     try:
         habitos.registrar_accion(nombre, args, resultado)
     except Exception:
@@ -1587,6 +1629,8 @@ def _prompt(cfg, herramientas=None, texto=""):
         partes.append("\n\nCómo usar estas herramientas: " + " ".join(guias))
     partes.append(cognicion.reglas(cognicion.nivel(texto) if texto else "normal", texto))
     partes.append(_estado_vivo() + cognicion.contexto())
+    # la verdad de lo que hizo: sin esto, ante "¿tú hiciste...?" el modelo podía inventar
+    partes.append(bitacora.REGLA + bitacora.resumen())
     partes.append(acciones.REGLA)
     return "".join(p for p in partes if p)
 
@@ -1833,7 +1877,8 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
     try:
         # Atajos: órdenes simples sin pasar por el modelo
         rapido = (atajo_presentacion(user) or atajo_sistema(user) or atajo_realidad(user)
-                  or atajo_medios(user) or atajo_personalidad(user) or _respuesta_a_sugerencia(user))
+                  or atajo_medios(user) or atajo_personalidad(user) or atajo_que_hice(user) or atajo_juego(user)
+                  or _respuesta_a_sugerencia(user))
         if rapido:
             reply = ejecutar_herramienta(cfg, *rapido)
             _entregar(cfg, turno, reply, [rapido[0]])
@@ -1971,6 +2016,7 @@ def main(persistente=False):
         return True
     correo.hablar = lambda texto: avisar(cfg, texto)
     nube.hablar = lambda texto: avisar(cfg, texto)
+    para_mi.hablar = lambda texto: avisar(cfg, texto)
     semantica.iniciar()  # indexa tus conversaciones por significado (en segundo plano)
     respaldo.iniciar()   # un respaldo cifrado al día en Supabase (si está conectado)
     presencia.antes_de_saludar = ciclo.resumen_pendiente_hoy  # el resumen de la mañana ya saluda
