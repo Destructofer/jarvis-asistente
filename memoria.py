@@ -98,6 +98,18 @@ def buscar(tema):
             if all(t[:5] in skills._norm(h["texto"]) for t in tokens)]
 
 
+def _por_significado(tema, tipo, k=8, minimo=0.5, desde=None, hasta=None):
+    """refs (ids locales) de lo que se parece en SIGNIFICADO (semantica.py); [] si no está."""
+    try:
+        import semantica
+        if not semantica.disponible():
+            return []
+        return [r["ref"] for r in semantica.buscar(tema, k=k, tipo=tipo, minimo=minimo,
+                                                  desde=desde, hasta=hasta) if r["ref"] is not None]
+    except Exception:
+        return []
+
+
 def borrar_hechos(ids):
     if ids:
         _q(f"DELETE FROM hechos WHERE id IN ({','.join('?' * len(ids))})",
@@ -172,6 +184,12 @@ def consultar_memoria(tema=""):
         return MSG_OFF
     if _tokens(tema):
         hits = buscar(tema)
+        ids = {h["id"] for h in hits}
+        # también lo que significa lo mismo con otras palabras ("mascota" -> "mi perro Rocky")
+        refs = [r for r in _por_significado(tema, "hecho", k=5) if r not in ids]
+        if refs:
+            por_id = {h["id"]: h for h in listar_hechos()}
+            hits += [por_id[r] for r in refs if r in por_id]
         if not hits:
             return "No tengo nada guardado sobre ese tema."
     else:
@@ -230,7 +248,7 @@ def recordar_conversacion(tema="", cuando=""):
     if not _activa():
         return MSG_OFF
     desde, hasta = _rango(cuando)  # una fecha que no entienda no impide buscar el tema
-    sql, params = "SELECT ts, rol, contenido FROM mensajes", []
+    sql, params = "SELECT id, ts, rol, contenido FROM mensajes", []
     if desde:
         sql += " WHERE ts >= ? AND ts < ?"
         params += [desde, hasta]
@@ -241,6 +259,11 @@ def recordar_conversacion(tema="", cuando=""):
         idx = [i for i, f in enumerate(filas) if f["rol"] == "user"
                and not PREGUNTA_RECUERDO.search(skills._norm(f["contenido"]))
                and sum(t[:5] in skills._norm(f["contenido"]) for t in tokens) >= max(1, len(tokens) // 2)]
+        # + por significado: "lo que te dije del viaje" encuentra "me voy a Oaxaca en diciembre"
+        refs = set(_por_significado(tema, "mensaje", k=6, desde=desde, hasta=hasta))
+        if refs:
+            idx += [i for i, f in enumerate(filas) if f["id"] in refs and i not in idx
+                    and not PREGUNTA_RECUERDO.search(skills._norm(f["contenido"]))]
         elegidos = sorted({j for i in idx for j in (i, i + 1) if j < len(filas)})
         filas = [filas[j] for j in elegidos]
     if not filas:
@@ -264,18 +287,45 @@ def olvidar(tema):
     if not _activa():
         return MSG_OFF
     hits = buscar(tema)
-    if not hits:
+    # Antes solo se borraban los datos guardados y las CONVERSACIONES donde lo dijiste seguían
+    # ahí (y se podían volver a recordar). Ahora también: tu mensaje y la respuesta que siguió.
+    mensajes = mensajes_sobre(tema)
+    if not hits and not mensajes:
         return "No encontré nada guardado sobre ese tema."
     if pedir_confirmacion is None:
         return "No puedo pedir confirmación ahora, así que no borré nada."
-    if len(hits) <= 3:
-        pregunta = "Voy a borrar: " + "; ".join(h["texto"] for h in hits) + ". ¿Confirmas?"
+    if hits and len(hits) <= 3:
+        pregunta = "Voy a borrar: " + "; ".join(h["texto"] for h in hits)
     else:
-        pregunta = f"Encontré {len(hits)} recuerdos sobre eso. ¿Los borro todos?"
-    if not pedir_confirmacion(pregunta):
+        pregunta = f"Encontré {len(hits)} recuerdos sobre eso" if hits else "Voy a borrar"
+    if mensajes:
+        pregunta += f" y {len(mensajes)} mensaje{'s' if len(mensajes) != 1 else ''} de conversaciones donde lo mencionaste"
+    if not pedir_confirmacion(pregunta + ". ¿Confirmas?"):
         return "El usuario canceló. No se borró nada."
     borrar_hechos([h["id"] for h in hits])
-    return f"Olvidado ({len(hits)})."
+    borrar_mensajes(mensajes)
+    return f"Olvidado ({len(hits) + len(mensajes)})."
+
+
+def mensajes_sobre(tema):
+    """ids de tus mensajes que hablan del tema (todas sus palabras clave) y de la respuesta de
+    Jarvis que siguió a cada uno."""
+    tokens = _tokens(tema)
+    if not tokens:
+        return []
+    filas = _q("SELECT id, rol, contenido FROM mensajes ORDER BY id")
+    ids = []
+    for i, f in enumerate(filas):
+        if f["rol"] == "user" and all(t[:5] in skills._norm(f["contenido"]) for t in tokens):
+            ids.append(f["id"])
+            if i + 1 < len(filas) and filas[i + 1]["rol"] != "user":
+                ids.append(filas[i + 1]["id"])
+    return ids
+
+
+def borrar_mensajes(ids):
+    if ids:
+        _q(f"DELETE FROM mensajes WHERE id IN ({','.join('?' * len(ids))})", tuple(ids), escribir=True)
 
 
 @skill("olvidar_todo", "Borra TODA la memoria permanente de recuerdos. Pide confirmación.")

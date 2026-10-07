@@ -1920,3 +1920,162 @@ class ClimaDicho(unittest.TestCase):
         self.assertIn("paraguas", texto)
         self.assertIn("abrígate", texto)
         self.assertIn("Mañana: 21 grados", texto)
+
+
+class MemoriaPorSignificado(unittest.TestCase):
+    """semantica.py con un modelo de embeddings simulado (sin Ollama ni internet)."""
+
+    TEMAS = {"viaje": ("viaje", "vacaciones", "oaxaca", "playa"), "mascota": ("mascota", "perro", "rocky", "gato"),
+             "examen": ("examen", "prueba", "calculo", "parcial")}
+
+    def _vec(self, texto):
+        t = skills._norm(texto)
+        v = np.array([sum(p in t for p in palabras) for palabras in self.TEMAS.values()] + [0.1], dtype=np.float32)
+        return v / np.linalg.norm(v)
+
+    def setUp(self):
+        import memoria
+        import nube
+        import semantica
+        self.S, self.M, self.N = semantica, memoria, nube
+        self._db = memoria.DB_PATH
+        memoria.DB_PATH = Path(tempfile.mkdtemp()) / "prueba.db"
+        self._orig = (semantica.embeddings, nube.lista, nube.peticion)
+        semantica.embeddings = lambda textos: np.vstack([self._vec(t) for t in textos])
+        self.peticiones = []
+        nube.lista = lambda: True
+        nube.peticion = lambda metodo, ruta, **kw: self.peticiones.append((metodo, ruta, kw)) or \
+            type("R", (), {"json": lambda s: []})()
+        semantica._estado.update(cambios=0, version=-1, matriz=None)
+
+    def tearDown(self):
+        self.M.DB_PATH = self._db
+        self.S.embeddings, self.N.lista, self.N.peticion = self._orig
+        self.S._estado.update(cambios=0, version=-1, matriz=None)
+
+    def test_encuentra_por_significado_y_respeta_el_olvido(self):
+        self.M.guardar_mensaje("user", "Me voy de vacaciones a Oaxaca en diciembre")
+        self.M.guardar_mensaje("assistant", "¡Qué buen plan!")
+        self.M.guardar_mensaje("user", "Mi perro se llama Rocky")
+        self.M.guardar_mensaje("user", "ok")                     # muy corto: no se indexa
+        self.M.agregar_hecho("Tiene examen de cálculo el viernes")
+        agregados, _ = self.S.indexar()
+        self.assertEqual(agregados, 3)
+        r = self.S.buscar("lo que te dije del viaje")
+        self.assertIn("Oaxaca", r[0]["texto"])
+        self.assertEqual(self.S.buscar("¿cuándo es mi prueba?")[0]["tipo"], "hecho")
+        # subir a la nube
+        self.assertEqual(self.S.subir(), 3)
+        self.assertTrue(any(m == "POST" and "/rest/v1/recuerdos" in ruta for m, ruta, _ in self.peticiones))
+        # olvidar la conversación del viaje: se borra del índice y de Supabase
+        ids = self.M.mensajes_sobre("vacaciones Oaxaca")
+        self.assertEqual(len(ids), 2)                             # tu mensaje y la respuesta
+        self.M.borrar_mensajes(ids)
+        _, borrados = self.S.indexar()
+        self.assertEqual(borrados, 1)
+        self.assertEqual(self.S.buscar("lo que te dije del viaje"), [])
+        self.peticiones.clear()
+        self.S.subir()
+        self.assertTrue(any(m == "DELETE" and "recuerdos?id=in." in ruta for m, ruta, _ in self.peticiones))
+        self.assertEqual(self.S._q("SELECT id FROM borrar_en_nube"), [])
+
+    def test_si_la_nube_falla_el_borrado_queda_pendiente(self):
+        self.M.guardar_mensaje("user", "Mi perro se llama Rocky y es café")
+        self.S.indexar()
+        self.S.subir()
+
+        def falla(metodo, ruta, **kw):
+            raise self.N.NubeError("sin red")
+        self.M.borrar_mensajes(self.M.mensajes_sobre("perro Rocky"))
+        self.S.indexar()
+        self.N.peticion = falla
+        with self.assertRaises(self.N.NubeError):
+            self.S.subir()
+        self.assertEqual(len(self.S._q("SELECT id FROM borrar_en_nube")), 1)   # no se pierde
+
+    def test_recordar_conversacion_por_significado(self):
+        self.M.guardar_mensaje("user", "Me voy de vacaciones a Oaxaca en diciembre")
+        self.M.guardar_mensaje("assistant", "Suena increíble")
+        self.S.indexar()
+        self.S._estado["hilo"] = "prueba"   # disponible
+        try:
+            texto = self.M.recordar_conversacion("el viaje")
+        finally:
+            self.S._estado["hilo"] = None
+        self.assertIn("Oaxaca", texto)
+
+
+class RespaldosCifrados(unittest.TestCase):
+    def test_cifrado(self):
+        import respaldo
+        blob = respaldo.cifrar(b"mis datos", "frase secreta larga")
+        self.assertNotIn(b"mis datos", blob)
+        self.assertEqual(respaldo.descifrar(blob, "frase secreta larga"), b"mis datos")
+        with self.assertRaises(ValueError):
+            respaldo.descifrar(blob, "otra frase")
+
+    def test_zip_sin_claves_y_restauracion(self):
+        import io
+        import sqlite3
+        import zipfile
+        import nube
+        import respaldo
+        tmp = Path(tempfile.mkdtemp())
+        datos = tmp / "datos"
+        datos.mkdir()
+        con = sqlite3.connect(datos / "genesis.db")
+        con.execute("CREATE TABLE t (x)")
+        con.execute("INSERT INTO t VALUES ('hola')")
+        con.commit()
+        con.close()
+        (datos / "gmail.json").write_text("secreto")            # no debe ir
+        (datos / "apps.json").write_text("{}")
+        avatares = tmp / "Avatares" / "Vault Boy"
+        avatares.mkdir(parents=True)
+        (avatares / "saludo.gif").write_bytes(b"GIF89a")
+        (tmp / "config.json").write_text('{"name": "Jarvis"}')
+        z = respaldo.armar_zip(datos, tmp / "Avatares", tmp / "config.json")
+        nombres = zipfile.ZipFile(io.BytesIO(z)).namelist()
+        self.assertIn("datos/genesis.db", nombres)
+        self.assertIn("Avatares/Vault Boy/saludo.gif", nombres)
+        self.assertNotIn("datos/gmail.json", nombres)
+        blob = respaldo.cifrar(z, "frase de prueba")
+        # restaurar en otra carpeta (como en otra PC)
+        destino = Path(tempfile.mkdtemp())
+        orig = (nube.peticion, respaldo.listar, respaldo.AVATARES)
+        nube.peticion = lambda *a, **k: type("R", (), {"content": blob})()
+        respaldo.listar = lambda equipo=None: [{"name": "2026-10-06_0300.jarvis"}]
+        respaldo.AVATARES = destino / "Avatares"
+        try:
+            respaldo.restaurar("frase de prueba", destino=destino)
+        finally:
+            nube.peticion, respaldo.listar, respaldo.AVATARES = orig
+        con = sqlite3.connect(destino / "datos" / "genesis.db")
+        self.assertEqual(con.execute("SELECT x FROM t").fetchone()[0], "hola")
+        con.close()
+        self.assertTrue((destino / "Avatares" / "Vault Boy" / "saludo.gif").exists())
+
+
+class ConectarSupabase(unittest.TestCase):
+    def test_validaciones(self):
+        import nube
+        self.assertEqual(nube.normalizar_url("abcdefghijklmnopqrst"), "https://abcdefghijklmnopqrst.supabase.co")
+        self.assertEqual(nube.normalizar_url("https://abcdefghijklmnopqrst.supabase.co/rest/v1/"),
+                         "https://abcdefghijklmnopqrst.supabase.co")
+        ok, aviso = nube.conectar("https://abcdefghijklmnopqrst.supabase.co", "sb_publishable_xxx",
+                                  "frase larga", abrir_editor=False)
+        self.assertFalse(ok)
+        self.assertIn("pública", aviso)
+        ok, aviso = nube.conectar("https://ejemplo.com", "sb_secret_xxx", "frase larga", abrir_editor=False)
+        self.assertFalse(ok)
+        ok, aviso = nube.conectar("https://abcdefghijklmnopqrst.supabase.co", "sb_secret_xxx", "corta",
+                                  abrir_editor=False)
+        self.assertFalse(ok)
+        self.assertIn("8 caracteres", aviso)
+
+    def test_esquema_seguro(self):
+        sql = (Path(__file__).resolve().parents[1] / "supabase" / "esquema.sql").read_text(encoding="utf-8")
+        self.assertIn("enable row level security", sql)
+        self.assertIn("vector(768)", sql)
+        self.assertIn("buscar_recuerdos", sql)
+        self.assertNotIn("drop table", sql.lower())

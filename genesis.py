@@ -33,6 +33,7 @@ import mantenimiento
 import memoria
 import multimedia  # noqa: F401  (registra las skills youtube y spotify)
 import observador  # observa al público en modo expositor (dudas, con quién platicas)
+import nube  # Supabase (opcional): copia de la memoria y respaldos cifrados
 import panel
 import personalidades  # mirrey, godín, abuelita... (la elegida se recuerda)
 import presencia  # Jarvis te ve: te saluda al llegar, nota cómo estás, te mira si se lo pides
@@ -40,6 +41,8 @@ import preferencias  # navegador, música, apps preferidas e instrucciones perma
 import presentacion
 import realidad  # modo realidad aumentada con las manos
 import recordatorios
+import respaldo  # respaldos diarios cifrados en Supabase
+import semantica  # memoria por significado (embeddings locales + copia en Supabase)
 import skills
 import teams  # noqa: F401  (registra las skills de Microsoft Teams)
 import whatsapp  # noqa: F401  (los chats de WhatsApp sin responder)
@@ -221,6 +224,10 @@ ATAJOS = {
               "como estara el clima manana", "va a llover manana"},
     "ver_pendientes": {"que tengo pendiente", "mis pendientes", "que me quedo pendiente",
                        "que quedo pendiente de ayer", "que me falta"},
+    "respaldar_ahora": {"respaldate", "haz un respaldo", "respalda ahora", "haz un respaldo ahora",
+                        "respalda todo", "guarda un respaldo"},
+    "estado_nube": {"como esta la nube", "esta conectada la nube", "cuando fue el ultimo respaldo",
+                    "estado de supabase", "esta conectado supabase"},
     "que_suena": {"que cancion es esta", "que cancion es", "que cancion suena", "que suena",
                   "que esta sonando", "como se llama esta cancion", "como se llama la cancion",
                   "que video es este", "que estoy escuchando", "que cancion esta sonando"},
@@ -385,6 +392,8 @@ GRUPOS = [
     (r"pendiente|me quedo|me falta|tengo que|manana tengo|anota|ya termine|tacha|resumen|ponme al dia|"
      r"como viene el dia|buenos dias",
      ["anotar_pendiente", "ver_pendientes", "completar_pendiente", "resumen_del_dia"]),
+    (r"supabase|la nube|respald|copia de seguridad|backup|restaur",
+     ["conectar_supabase", "estado_nube", "respaldar_ahora"]),
     (r"habito|rutina|costumbre|sueles|siempre hago|sugier|sugerencia|aprendiste de mi|que sabes de mi",
      ["mis_habitos", "sugerencias_habitos", "olvidar_habitos"]),
     (r"rutina|demo",
@@ -1569,6 +1578,10 @@ def _prompt(cfg, herramientas=None, texto=""):
         partes.append(navegador.contexto())
     partes.append(presencia.contexto())  # lo que Jarvis ve de ti (si la cámara está activa)
     partes.append(preferencias.contexto())  # tus preferencias e instrucciones permanentes
+    if texto and cognicion.nivel(texto) != "rapido":
+        # Lo de conversaciones PASADAS que tiene que ver con lo que acabas de decir (~30 ms, en
+        # tu PC): "¿cómo me fue en el examen?" trae lo que le contaste del examen hace días
+        partes.append(semantica.contexto(texto))
     guias = [g for n, g in GUIAS.items() if herramientas is not None and n in herramientas]
     if guias:
         partes.append("\n\nCómo usar estas herramientas: " + " ".join(guias))
@@ -1957,6 +1970,9 @@ def main(persistente=False):
         intervenir(cfg, texto, publico=False)
         return True
     correo.hablar = lambda texto: avisar(cfg, texto)
+    nube.hablar = lambda texto: avisar(cfg, texto)
+    semantica.iniciar()  # indexa tus conversaciones por significado (en segundo plano)
+    respaldo.iniciar()   # un respaldo cifrado al día en Supabase (si está conectado)
     presencia.antes_de_saludar = ciclo.resumen_pendiente_hoy  # el resumen de la mañana ya saluda
     ciclo.iniciar(cfg, ofrecer=ofrecer_habito,
                   libre=lambda: puede_hablar_por_su_cuenta() and not presentando(cfg)

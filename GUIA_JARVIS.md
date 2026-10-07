@@ -309,6 +309,27 @@ largos se analizan por partes. Todo en `documentos.py`.
 
 En `entorno.py`. Usa la misma fuente de cámara que "¿qué ves?" (`camara.fuente`).
 
+## Memoria por significado y respaldos en Supabase (`semantica.py`, `nube.py`, `respaldo.py`)
+
+**Memoria por significado:** Jarvis encuentra "lo que te dije del viaje" aunque hayas dicho
+"vacaciones en Oaxaca". Cada mensaje tuyo y cada dato que sabe de ti se convierte en un
+embedding con un modelo abierto que corre en tu PC (`paraphrase-multilingual` vía Ollama, en el
+procesador: ~25 ms por búsqueda, sin internet). Lo usan "¿de qué hablamos de...?", "¿qué sabes de
+mí sobre...?" y, en las preguntas que no son órdenes directas, Jarvis toma solo lo relevante de
+conversaciones pasadas. Si dices "olvida lo de X" también se borran las conversaciones donde lo
+dijiste, del índice y de Supabase.
+
+**Supabase (opcional):** "Jarvis, conecta Supabase" pide la URL del proyecto, la clave secreta
+(Settings > API Keys) y una frase para cifrar tus respaldos; si falta la tabla, copia
+`supabase/esquema.sql` y abre el SQL Editor para pegarlo y darle Run (la tabla queda con RLS: la
+clave pública no puede leer nada). Desde ahí:
+- Una copia de la memoria por significado se sube en segundo plano (pgvector).
+- **Un respaldo diario cifrado** (memoria, preferencias, pendientes, hábitos, config.json y
+  avatares) al bucket privado `respaldos`; se guardan los últimos 7. "Respáldate" lo hace ya.
+- Recuperar en esta u otra PC (con Jarvis cerrado): `.venv\Scripts\python respaldo.py restaurar`.
+
+Sin Supabase o sin internet, Jarvis funciona igual: todo se lee de tu PC.
+
 ## El día y la noche (`ciclo.py`)
 
 **En la mañana**, la primera vez que te ve (o que usas la computadora) te da el resumen del día:
