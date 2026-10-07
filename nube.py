@@ -209,7 +209,13 @@ def configurar_automatico(token, frase, avisar=print, espera_seg=420):
     if proyecto is None:
         organizaciones = _api(token, "GET", "/organizations")
         if not organizaciones:
-            return False, "Tu cuenta de Supabase no tiene organización; entra una vez al panel para crearla."
+            # Cuenta nueva: todavía no tiene organización (el contenedor de los proyectos). Se
+            # crea una, en el plan gratis.
+            try:
+                organizaciones = [_api(token, "POST", "/organizations", json={"name": "Jarvis"})]
+            except NubeError as e:
+                return False, ("Tu cuenta de Supabase no tiene organización y no pude crearla "
+                               f"({e}). Entra una vez a supabase.com/dashboard y créala ahí.")
         org = organizaciones[0]
         clave_bd = secrets.token_urlsafe(24)   # contraseña de la base: solo para emergencias
         avisar("Estoy creando tu proyecto de Supabase; tarda uno o dos minutos.")
