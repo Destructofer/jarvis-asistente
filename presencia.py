@@ -140,7 +140,7 @@ def _saludo(fuera):
                    f"no describas nada. {'Llámalo ' + nombre + '.' if nombre else ''} Solo la frase.")
     try:
         texto = vision.ver(_cfg(), _foto(), instruccion, _sistema(), max_tokens=120,
-                           lado=int(_conf().get("lado", 640)), reglas=vision.REGLAS_USUARIO)
+                           lado=int(_conf().get("lado", 640)), reglas=vision.REGLAS_USUARIO, fondo=True)
         texto = texto.strip().strip('"')
         if texto and len(texto) < 240:
             return texto
@@ -182,7 +182,7 @@ def _vistazo():
     try:
         texto = vision.ver(_cfg(), _foto(), instruccion, "Eres los ojos de un asistente. Respondes "
                            "en español, una frase.", max_tokens=80, lado=int(_conf().get("lado", 640)),
-                           reglas=vision.REGLAS_USUARIO)
+                           reglas=vision.REGLAS_USUARIO, fondo=True)
         if texto:
             _estado["vista"] = (time.time(), texto.strip())
     except Exception as e:

@@ -2311,3 +2311,120 @@ class DetectorParaMi(unittest.TestCase):
         self.assertTrue(self.P.llamado("Jarvis, pon el video de cocina"))
         self.assertEqual(self.P.correcciones(), ["pon el video de cocina"])
         self.assertFalse(self.P.llamado("Jarvis, qué hora es"))
+
+
+class VisionConLimites(unittest.TestCase):
+    """vision.py: una nube que llegó a su límite queda en pausa; lo de fondo va al modelo local."""
+
+    def setUp(self):
+        import vision
+        self.V = vision
+        self._orig = (vision._nube_varias, vision._local_varias, vision._proveedores, vision._usar_nube)
+        self.llamadas = []
+        vision._proveedores = lambda conf: [{"modelo": "nube-a", "url": "x"}, {"modelo": "nube-b", "url": "y"}]
+        vision._usar_nube = lambda conf: bool(vision.libres(conf))
+        vision._local_varias = lambda conf, s, i, l: self.llamadas.append("local") or "visto en local"
+        cerebro._saturado.clear()
+
+    def tearDown(self):
+        self.V._nube_varias, self.V._local_varias, self.V._proveedores, self.V._usar_nube = self._orig
+        cerebro._saturado.clear()
+
+    def test_el_limite_pone_en_pausa(self):
+        def nube(conf, n, s, i, l):
+            self.llamadas.append(n["modelo"])
+            if n["modelo"] == "nube-a":
+                raise RuntimeError("Error code: 429 - Rate limit reached. Please try again in 1m30s")
+            return "visto en b"
+        self.V._nube_varias = nube
+        self.assertEqual(self.V._ver({}, "s", "i", ["b64"]), "visto en b")
+        self.assertGreater(cerebro._saturado["nube-a"] - time.time(), 80)    # pausa de 1m30s
+        self.llamadas.clear()
+        self.assertEqual(self.V._ver({}, "s", "i", ["b64"]), "visto en b")
+        self.assertEqual(self.llamadas, ["nube-b"])                          # ni lo intenta con la "a"
+
+    def test_todas_en_pausa_va_directo_al_local(self):
+        self.V._nube_varias = lambda *a: self.fail("no debía llamar a la nube")
+        cerebro._saturado.update({"nube-a": time.time() + 60, "nube-b": time.time() + 60})
+        self.assertEqual(self.V._ver({}, "s", "i", ["b64"]), "visto en local")
+
+    def test_lo_de_fondo_no_gasta_la_nube(self):
+        self.V._nube_varias = lambda *a: self.fail("lo de fondo no debía usar la nube")
+        self.assertEqual(self.V._ver({}, "s", "i", ["b64"], fondo=True), "visto en local")
+
+
+class WhisperSinMemoria(unittest.TestCase):
+    """Sin RAM, Whisper tumbaba a Jarvis completo (mkl_malloc: failed to allocate memory)."""
+
+    def setUp(self):
+        self._orig = (escuchar._cargar_modelo, escuchar._transcribir_nube, escuchar.liberar_memoria,
+                      escuchar._avisar_memoria, escuchar._gpu["ok"], escuchar._cfg)
+        self.liberadas = []
+        escuchar.liberar_memoria = lambda: self.liberadas.append(1)
+        escuchar._avisar_memoria = lambda: None
+        escuchar._gpu["ok"] = False
+        escuchar._cfg = lambda: {"stt": {"modo": "auto"}}
+
+    def tearDown(self):
+        (escuchar._cargar_modelo, escuchar._transcribir_nube, escuchar.liberar_memoria,
+         escuchar._avisar_memoria, escuchar._gpu["ok"], escuchar._cfg) = self._orig
+
+    def _sin_ram(self, nombre):
+        raise RuntimeError("mkl_malloc: failed to allocate memory")
+
+    def test_no_tumba_a_jarvis_y_rescata_con_la_nube(self):
+        escuchar._cargar_modelo = self._sin_ram
+        nube = iter([None, "abre spotify"])   # la 1a vez (nube=True) no contesta; la de rescate sí
+        escuchar._transcribir_nube = lambda audio, prompt: next(nube)
+        audio = np.zeros(16000, dtype=np.float32)
+        self.assertEqual(escuchar.transcribir(audio, nube=True), "abre spotify")
+        self.assertEqual(len(self.liberadas), 2)          # liberó memoria en cada intento
+        escuchar._transcribir_nube = lambda audio, prompt: None
+        self.assertEqual(escuchar.transcribir(audio, nube=True), "")   # sin nube: "no te escuché"
+
+    def test_otros_errores_no_se_esconden(self):
+        def roto(nombre):
+            raise ValueError("otra cosa")
+        escuchar._cargar_modelo = roto
+        with self.assertRaises(ValueError):
+            escuchar._transcribir_local(np.zeros(10, dtype=np.float32), "small", None)
+
+    def test_reconoce_falta_de_memoria(self):
+        self.assertTrue(escuchar.es_falta_de_memoria(MemoryError()))
+        self.assertTrue(escuchar.es_falta_de_memoria(RuntimeError("CUDA failed: out of memory")))
+        self.assertFalse(escuchar.es_falta_de_memoria(RuntimeError("cublas64_12.dll not found")))
+
+
+class AprendeSoloDeTi(unittest.TestCase):
+    """Guardaba "Se llama Jarvis" y "Su nombre es Abraham Jarvis" de una canción y un video."""
+
+    def setUp(self):
+        import para_mi
+        self.P = para_mi
+        self._orig = (para_mi.probabilidad, escuchar.frase_de_la_pc)
+        escuchar.frase_de_la_pc = lambda minimo=0.5: False
+
+    def tearDown(self):
+        self.P.probabilidad, escuchar.frase_de_la_pc = self._orig
+
+    def test_de_quien_aprende(self):
+        self.P.probabilidad = lambda t: 0.3
+        self.assertTrue(genesis._es_de_fiar("me gusta el rock", seguimiento=False))    # lo llamaste
+        self.assertFalse(genesis._es_de_fiar("amiguitos, mi nombre es...", seguimiento=True))
+        self.P.probabilidad = lambda t: 0.95
+        self.assertTrue(genesis._es_de_fiar("estudio ingeniería en sistemas", seguimiento=True))
+        escuchar.frase_de_la_pc = lambda minimo=0.5: True                            # sonaba la PC
+        self.assertFalse(genesis._es_de_fiar("estudio ingeniería en sistemas", seguimiento=True))
+
+    def test_no_guarda_hechos_sobre_jarvis(self):
+        import cognicion
+        import memoria
+        guardados = []
+        orig = (memoria.listar_hechos, memoria.agregar_hecho)
+        memoria.listar_hechos = lambda: []
+        memoria.agregar_hecho = guardados.append
+        try:
+            cognicion._guardar(["Se llama Jarvis", "Su nombre es Abraham Jarvis", "Le gusta el rock"])
+        finally:
+            memoria.listar_hechos, memoria.agregar_hecho = orig
+        self.assertEqual(guardados, ["Le gusta el rock"])

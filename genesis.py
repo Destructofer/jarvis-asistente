@@ -150,6 +150,19 @@ def _no_es_para_mi(cfg, texto):
     return ""
 
 
+def _es_de_fiar(texto, seguimiento):
+    """¿Aprender hechos sobre ti de esta frase? Solo si de verdad la dijiste TÚ: llamándolo por
+    su nombre, o sin nombre si la red "¿era para mí?" está muy segura y no sonaba audio de la
+    computadora. Antes aprendía de lo que captaba de videos y canciones ("Se llama Jarvis",
+    "Su nombre es Abraham Jarvis"). Frente al público, nunca de lo dicho sin nombre."""
+    if not seguimiento:
+        return True
+    if expositor.ACTIVO or escuchar.frase_de_la_pc(minimo=0.2):
+        return False
+    p = para_mi.probabilidad(texto)
+    return p is not None and p >= 0.9
+
+
 def clasificar_seguimiento(texto):
     """'jarvis' si es claramente para él, 'publico' si claramente se le habla a la audiencia,
     'duda' si no se sabe (lo decide el modelo)."""
@@ -1968,7 +1981,7 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
             return
         memoria.guardar_mensaje("user", user)
         memoria.guardar_mensaje("assistant", acciones.separar(str(reply))[0])
-        if not seguimiento or not expositor.ACTIVO:  # frente al público, no aprende de otros
+        if _es_de_fiar(user, seguimiento):
             cognicion.aprender(cfg, user)
         _entregar(cfg, turno, reply)
     finally:
@@ -2017,6 +2030,7 @@ def main(persistente=False):
     correo.hablar = lambda texto: avisar(cfg, texto)
     nube.hablar = lambda texto: avisar(cfg, texto)
     para_mi.hablar = lambda texto: avisar(cfg, texto)
+    escuchar.AL_FALTAR_MEMORIA = lambda texto: avisar(cfg, texto)
     semantica.iniciar()  # indexa tus conversaciones por significado (en segundo plano)
     respaldo.iniciar()   # un respaldo cifrado al día en Supabase (si está conectado)
     presencia.antes_de_saludar = ciclo.resumen_pendiente_hoy  # el resumen de la mañana ya saluda
@@ -2071,8 +2085,12 @@ def main(persistente=False):
     history = [{"role": "system", "content": _prompt(cfg)}]
     history += memoria.cargar_mensajes(cfg.get("memoria", {}).get("turnos_previos", 6))
 
+    try:
+        mensajes = memoria._q("SELECT COUNT(*) AS n FROM mensajes")[0]["n"]
+    except Exception:
+        mensajes = 0
     print(f"{_nombre(cfg)} listo (modo: {cfg.get('modo', 'auto')}, "
-          f"{len(memoria.listar_hechos())} recuerdos). [ACCION: saludo]\n")
+          f"{len(memoria.listar_hechos())} datos sobre ti, {mensajes} mensajes). [ACCION: saludo]\n")
     hud.accion("saludo", segundos=8)
     # La cámara de la PC (gestos y presencia) al final: si te saludara mientras calibra el
     # micrófono, su propia voz subiría el umbral y luego no te oiría bien

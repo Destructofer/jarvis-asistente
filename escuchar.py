@@ -731,7 +731,31 @@ def _gpu_sirve():
     with _lock_gpu:
         if _gpu["ok"] is None:
             _gpu["ok"] = _probar_gpu()
+            if not _gpu["ok"]:
+                try:
+                    import ctranslate2
+                    if ctranslate2.get_cuda_device_count() > 0:
+                        _reprobar_gpu_luego()   # hay tarjeta: el fallo puede ser pasajero
+                except Exception:
+                    pass
     return _gpu["ok"]
+
+
+REPROBAR_GPU_SEG = 300   # si la GPU falló al arrancar (VRAM llena, error de CUDA), se vuelve a probar
+
+
+def _reprobar_gpu_luego():
+    """La GPU falló (a veces es pasajero: la tarjeta estaba llena con otro modelo): en unos
+    minutos se vuelve a probar y, si ya sirve, la próxima carga de Whisper va a la GPU (antes se
+    quedaba en la CPU toda la sesión, más lento y gastando RAM)."""
+    def reprobar():
+        time.sleep(REPROBAR_GPU_SEG)
+        if _probar_gpu():
+            with _lock_modelos:
+                _gpu["ok"] = True
+                _modelos.clear()
+            print("[Whisper: la GPU ya responde; la uso desde la próxima orden]")
+    threading.Thread(target=reprobar, daemon=True, name="reprobar-gpu").start()
 
 
 def _probar_gpu():
@@ -775,13 +799,97 @@ def _cargar_modelo(nombre):
         return _modelos[nombre]
 
 
+class SinMemoria(RuntimeError):
+    """Whisper no pudo transcribir porque la computadora se quedó sin memoria."""
+
+
+AL_FALTAR_MEMORIA = None   # lo pone genesis.py: fn(texto) para avisarte (máx. cada 30 min)
+_aviso_memoria = {"t": 0.0}
+
+
+def es_falta_de_memoria(e):
+    t = str(e).lower()
+    return isinstance(e, MemoryError) or any(x in t for x in (
+        "mkl_malloc", "failed to allocate", "out of memory", "bad_alloc", "cuda_error_out_of_memory",
+        "cublas_status_alloc_failed", "not enough memory"))
+
+
+def quien_come_memoria():
+    """(nombre, GB) del programa que más RAM usa, sumando todos sus procesos."""
+    import collections
+    import psutil
+    uso = collections.Counter()
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            uso[p.info["name"]] += p.info["memory_info"].rss
+        except Exception:
+            pass
+    if not uso:
+        return None
+    nombre, b = uso.most_common(1)[0]
+    return nombre.removesuffix(".exe"), b / 2 ** 30
+
+
+def liberar_memoria():
+    """Suelta lo que Jarvis puede soltar: basura de Python y los modelos de Ollama que viven en
+    la RAM (los de embeddings; se vuelven a cargar solos cuando se necesitan)."""
+    import gc
+    gc.collect()
+    try:
+        import ollama
+        for m in ollama.ps().models:
+            if not getattr(m, "size_vram", 0):   # 100% en CPU = en la RAM
+                if "embed" in m.model or "paraphrase" in m.model or "minilm" in m.model:
+                    ollama.embed(model=m.model, input=[], keep_alive=0)
+                else:
+                    ollama.generate(model=m.model, prompt="", keep_alive=0)
+                print(f"[Memoria: descargué {m.model} de la RAM]")
+    except Exception:
+        pass
+    gc.collect()
+
+
+def _avisar_memoria():
+    ahora = time.time()
+    if ahora - _aviso_memoria["t"] < 1800:
+        return
+    _aviso_memoria["t"] = ahora
+    quien = None
+    try:
+        quien = quien_come_memoria()
+    except Exception:
+        pass
+    texto = "Tu computadora se quedó sin memoria y casi no te pude escuchar."
+    if quien and quien[1] >= 1.5:
+        texto += f" {quien[0].capitalize()} está usando {quien[1]:.1f} gigas; ciérrale algunas pestañas o ventanas."
+    print(f"[Memoria: {texto}]")
+    if AL_FALTAR_MEMORIA is not None:
+        try:
+            AL_FALTAR_MEMORIA(texto)
+        except Exception:
+            pass
+
+
 def _transcribir_local(audio, modelo, prompt):
-    whisper = _cargar_modelo(modelo)
-    segmentos, _ = whisper.transcribe(audio, language="es", beam_size=1, vad_filter=True,
-                                      initial_prompt=prompt)
-    partes = [s.text.strip() for s in segmentos
-              if _segmento_valido(s.no_speech_prob, s.avg_logprob, s.compression_ratio, s.text)]
-    return " ".join(p for p in partes if p).strip()
+    """Si se acaba la memoria: libera lo que puede y reintenta una vez; si vuelve a fallar,
+    SinMemoria (antes el error subía hasta el bucle principal y tumbaba a Jarvis)."""
+    for intento in range(2):
+        try:
+            whisper = _cargar_modelo(modelo)
+            segmentos, _ = whisper.transcribe(audio, language="es", beam_size=1, vad_filter=True,
+                                              initial_prompt=prompt)
+            partes = [s.text.strip() for s in segmentos
+                      if _segmento_valido(s.no_speech_prob, s.avg_logprob, s.compression_ratio, s.text)]
+            return " ".join(p for p in partes if p).strip()
+        except Exception as e:
+            if not es_falta_de_memoria(e):
+                raise
+            print(f"[Whisper se quedó sin memoria ({str(e)[:60]}); libero memoria y reintento]")
+            liberar_memoria()
+            if intento == 1:
+                _avisar_memoria()
+                raise SinMemoria(str(e)) from e
+    return ""
 
 
 def transcribir(audio, modelo="small", prompt=None, nube=False):
@@ -804,7 +912,16 @@ def transcribir(audio, modelo="small", prompt=None, nube=False):
         if texto is not None:
             ULTIMA_TRANSCRIPCION.update(seg=time.time() - t0, origen="nube")
             return texto
-    texto = _transcribir_local(audio, modelo, prompt)
+    try:
+        texto = _transcribir_local(audio, modelo, prompt)
+    except SinMemoria:
+        # rescate: la transcripción en la nube no usa tu memoria
+        texto = _transcribir_nube(audio, prompt) if modo in ("auto", "online") else None
+        if texto is None:
+            print("[No te pude transcribir: falta memoria]")
+            return ""
+        ULTIMA_TRANSCRIPCION.update(seg=time.time() - t0, origen="nube (sin memoria)")
+        return texto
     ULTIMA_TRANSCRIPCION.update(seg=time.time() - t0, origen="local")
     return texto
 
@@ -832,6 +949,8 @@ def precalentar(cfg):
             _transcribir_local(ruido, modelo, None)
     except Exception as e:
         print(f"[No pude precargar Whisper: {type(e).__name__}: {str(e)[:100]}]")
+        if es_falta_de_memoria(e):   # se vuelve a intentar en un rato (la primera orden no espera la carga)
+            threading.Timer(120, precalentar, args=(cfg,)).start()
 
 
 def escuchar(modelo="small", umbral=0.004, prompt=None):
