@@ -195,34 +195,78 @@ def guardar(correo, clave):
 hablar = None   # lo pone genesis.py: fn(texto) para avisar cómo terminó la conexión
 
 
-@skill("conectar_gmail",
-       "Conecta el Gmail del usuario (solo lectura) para que Jarvis le diga sus correos "
-       "importantes: abre la página de Google para crear una contraseña de aplicación y una "
-       "ventanita donde la pega. Úsala con 'conecta mi Gmail', 'vincula mi correo'.",
-       requeridos=[])
+def normalizar_correo(correo):
+    """'abraham.t082' -> 'abraham.t082@gmail.com'; sin espacios y en minúsculas."""
+    c = "".join((correo or "").split()).lower()
+    return c if "@" in c else (c + "@gmail.com" if c else "")
+
+
+def revisar_clave(clave):
+    """(clave limpia, problema o ''). Una contraseña de aplicación son 16 letras (Google la
+    muestra en 4 grupos con espacios). Pasó: se pegó la contraseña normal y Google la rechazó."""
+    c = "".join((clave or "").split()).lower()
+    if len(c) != 16 or not c.isalpha():
+        return c, ("Eso no parece una contraseña de aplicación: son 16 letras que te da Google en la "
+                   "página que te abrí, no tu contraseña normal de Gmail.")
+    return c, ""
+
+
+def conectar(correo, clave, probar_fn=None):
+    """Valida, prueba con Google y guarda. Devuelve (ok, qué decir)."""
+    correo = normalizar_correo(correo)
+    clave, problema = revisar_clave(clave)
+    if not correo or "@" not in correo:
+        return False, "Ese correo no es válido."
+    if problema:
+        return False, problema + (" Si la página dice que la opción no está disponible, primero "
+                                  "activa la verificación en dos pasos de tu cuenta de Google.")
+    try:
+        (probar_fn or probar)(correo, clave)
+    except imaplib.IMAP4.error as e:
+        print(f"[Gmail: {str(e)[:100]}]")
+        return False, (f"Google no aceptó la contraseña de aplicación para {correo}. Revisa que el "
+                       "correo sea exactamente el de esa cuenta y crea una contraseña nueva (la "
+                       "anterior puedes borrarla).")
+    except OSError as e:
+        print(f"[Gmail: {type(e).__name__}: {str(e)[:100]}]")
+        return False, "No pude comunicarme con Gmail; revisa el internet y vuelve a intentarlo."
+    guardar(correo, clave)
+    return True, f"Listo, tu Gmail {correo} quedó conectado. Ya puedo decirte tus correos importantes."
+
+
 def conectar_gmail():
     import panel
     webbrowser.open("https://myaccount.google.com/apppasswords")
 
     def con_correo(correo):
         def con_clave(clave):
-            try:
-                probar(correo, clave.replace(" ", ""))
-            except Exception as e:
-                aviso = ("Google no aceptó esa contraseña de aplicación. Revisa que sea la de 16 "
-                         "letras y vuelve a decirme 'conecta mi Gmail'.")
-                print(f"[Gmail: {type(e).__name__}: {str(e)[:80]}]")
-            else:
-                guardar(correo, clave)
-                aviso = "Listo, tu Gmail quedó conectado. Ya puedo decirte tus correos importantes."
+            ok, aviso = conectar(correo, clave)
+            if ok:
+                try:   # de una vez, lo importante de hoy
+                    resumen = resumen_correos()
+                    if resumen:
+                        aviso += " " + resumen
+                except Exception:
+                    pass
             if hablar:
                 hablar(aviso)
         panel.pedir_texto("Contraseña de aplicación de Google",
-                          "Pégala aquí (16 letras). Se guarda cifrada y solo sirve para LEER tu correo.",
+                          "Las 16 letras que te dio Google (con o sin espacios). NO tu contraseña "
+                          "normal. Se guarda cifrada y solo sirve para LEER tu correo.",
                           con_clave, lambda: None, oculto=True)
-    panel.pedir_texto("Conectar Gmail", "Tu correo de Gmail:", con_correo, lambda: None)
-    return ("Te abrí la página de Google para crear una contraseña de aplicación (necesitas la "
-            "verificación en dos pasos). Crea una para Jarvis y pégala en la ventanita.")
+    panel.pedir_texto("Conectar Gmail", "Tu correo de Gmail (por ejemplo tunombre@gmail.com):",
+                      con_correo, lambda: None)
+    return ("Te abrí la página de Google. Ahí escribe Jarvis como nombre de la app y dale a Crear: "
+            "te va a dar 16 letras. Pon tu correo en la ventanita y luego pega esas 16 letras. Si la "
+            "página dice que no está disponible, primero activa la verificación en dos pasos.")
+
+
+conectar_gmail = skill(
+    "conectar_gmail",
+    "Conecta el Gmail del usuario (solo lectura) para que Jarvis le diga sus correos importantes: "
+    "abre la página de Google para crear una contraseña de aplicación y una ventanita donde la "
+    "pega. Úsala con 'conecta mi Gmail', 'vincula mi correo'.",
+    requeridos=[])(conectar_gmail)
 
 
 @skill("correos_importantes",

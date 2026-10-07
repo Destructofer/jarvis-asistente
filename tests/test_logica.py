@@ -1836,6 +1836,38 @@ class CorreoImportante(unittest.TestCase):
         self.assertNotIn("Amazon", " ".join(a for _c, a in orden))
 
 
+class ConectarGmail(unittest.TestCase):
+    """Pasó: Google rechazó la conexión (se pegó la contraseña normal, no la de aplicación)."""
+
+    def test_valida_antes_de_intentar(self):
+        import correo
+        intentos = []
+        guardados = []
+        orig = correo.guardar
+        correo.guardar = lambda c, k: guardados.append((c, k))
+        try:
+            ok, aviso = correo.conectar("yo@gmail.com", "MiContraseña123", probar_fn=intentos.append)
+            self.assertFalse(ok)
+            self.assertIn("16 letras", aviso)
+            self.assertEqual(intentos, [])                  # ni lo intentó con Google
+            ok, aviso = correo.conectar(" Abraham.T082 ", "abcd efgh ijkl mnop",
+                                        probar_fn=lambda c, k: intentos.append((c, k)))
+            self.assertTrue(ok)
+            self.assertEqual(intentos, [("abraham.t082@gmail.com", "abcdefghijklmnop")])
+            self.assertEqual(guardados, [("abraham.t082@gmail.com", "abcdefghijklmnop")])
+        finally:
+            correo.guardar = orig
+
+    def test_rechazo_de_google_se_explica(self):
+        import correo
+
+        def rechaza(c, k):
+            raise correo.imaplib.IMAP4.error("[AUTHENTICATIONFAILED] Invalid credentials")
+        ok, aviso = correo.conectar("yo@gmail.com", "abcdefghijklmnop", probar_fn=rechaza)
+        self.assertFalse(ok)
+        self.assertIn("no aceptó", aviso)
+
+
 class WhatsAppSinResponder(unittest.TestCase):
     """Con el formato real de la app de escritorio (WhatsApp para Windows 2.26)."""
 
