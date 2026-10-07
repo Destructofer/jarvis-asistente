@@ -602,12 +602,14 @@ def _grabar_de_sub(sub, umbral, silencio_seg, max_seg, espera_seg, previo_inicia
     return np.concatenate(frames).flatten()
 
 
-def grabar(umbral=0.004, silencio_seg=None, max_seg=20, espera_seg=6):
-    """Espera a que hables, graba y corta cuando haces silencio."""
+def grabar(umbral=0.004, silencio_seg=None, max_seg=20, espera_seg=6, atento_a_conversar=False):
+    """Espera a que hables, graba y corta cuando haces silencio. atento_a_conversar: se corta
+    (None) si llega algo que atender (CONVERSAR: una orden del teléfono, un gesto)."""
     silencio_seg = SILENCIO_SEG if silencio_seg is None else silencio_seg
     sub = MIC.suscribir()
     try:
-        return _grabar_de_sub(sub, umbral, silencio_seg, max_seg, espera_seg)
+        return _grabar_de_sub(sub, umbral, silencio_seg, max_seg, espera_seg,
+                              atento_a_conversar=atento_a_conversar)
     finally:
         MIC.desuscribir(sub)
 

@@ -2428,3 +2428,80 @@ class AprendeSoloDeTi(unittest.TestCase):
         finally:
             memoria.listar_hechos, memoria.agregar_hecho = orig
         self.assertEqual(guardados, ["Le gusta el rock"])
+
+
+class ControlDesdeElTelefono(unittest.TestCase):
+    """remoto.py + genesis: órdenes desde el teléfono por Supabase."""
+
+    def setUp(self):
+        import nube
+        import remoto
+        self.R, self.N = remoto, nube
+        self.ordenes = [{"id": 7, "texto": "¿qué hora es?", "creado": "x"}]
+        self.respuestas, self.tomadas = [], []
+
+        class Resp:
+            def __init__(s, datos):
+                s._d = datos
+
+            def json(s):
+                return s._d
+
+        def peticion(metodo, ruta, json=None, encabezados=None, **kw):
+            if ruta.startswith("/rest/v1/telefonos"):
+                return Resp([{"id": 1}])
+            if metodo == "GET" and "estado=eq.pendiente" in ruta:
+                return Resp(self.ordenes)
+            if metodo == "PATCH" and "estado=eq.pendiente" in ruta:
+                self.tomadas.append(ruta)
+                return Resp([{"id": 7}] if len(self.tomadas) == 1 else [])
+            if metodo == "PATCH":
+                self.respuestas.append(json)
+            return Resp([])
+        self._orig = (nube.peticion, remoto.entregar, dict(remoto._estado))
+        nube.peticion = peticion
+        remoto._estado.update(telefonos=None, t_latido=0.0, t_limpieza=0.0, procesando=set())
+
+    def tearDown(self):
+        self.N.peticion, self.R.entregar = self._orig[0], self._orig[1]
+        self.R._estado.clear()
+        self.R._estado.update(self._orig[2])
+
+    def test_la_llave_va_despues_del_gato(self):
+        d = self.R.direccion("LLAVE/+x", url="https://abc.supabase.co", publica="sb_publishable_1",
+                             pagina="https://p.io/c/")
+        pagina, fragmento = d.split("#", 1)
+        self.assertEqual(pagina, "https://p.io/c/")             # al servidor solo llega esto
+        self.assertIn("t=LLAVE%2F%2Bx", fragmento)
+        self.assertEqual(len(self.R.huella("x")), 64)
+
+    def test_toma_cada_orden_una_sola_vez(self):
+        entregadas = []
+        self.R.entregar = entregadas.append
+        self.assertEqual(self.R.revisar_una_vez(), 1)
+        self.assertEqual(self.R.revisar_una_vez(), 0)          # ya está en proceso
+        self.R._estado["procesando"].clear()
+        self.assertEqual(self.R.revisar_una_vez(), 0)          # Supabase dice que ya no está pendiente
+        self.assertEqual([o["id"] for o in entregadas], [7])
+
+    def test_genesis_responde_al_telefono_y_no_hace_lo_peligroso(self):
+        orig = genesis._procesar
+        try:
+            def procesar(cfg, history, user, escrito, interruptor, **kw):
+                self.assertFalse(cfg["voz_activa"])               # no habla en la PC
+                genesis._entregar(cfg, type("T", (), {"decir": lambda s, t: None})(), "Son las 5.", [])
+            genesis._procesar = procesar
+            genesis._atender_remota({"voz_activa": True}, [], {"id": 7, "texto": "¿qué hora es?"}, None)
+            self.assertEqual(self.respuestas[-1]["respuesta"], "Son las 5.")
+            self.assertEqual(self.respuestas[-1]["estado"], "hecha")
+
+            def procesar_peligroso(cfg, history, user, escrito, interruptor, **kw):
+                r = genesis.ejecutar_herramienta(cfg, "apagar_equipo", {})
+                self.assertIsInstance(r, skills.Fallo)
+                genesis._entregar(cfg, type("T", (), {"decir": lambda s, t: None})(), "Falta de permisos.", [])
+            genesis._procesar = procesar_peligroso
+            genesis._atender_remota({}, [], {"id": 8, "texto": "apaga la compu"}, None)
+            self.assertIn("Por seguridad no lo hice", self.respuestas[-1]["respuesta"])
+        finally:
+            genesis._procesar = orig
+        self.assertIsNone(genesis._remota_actual["orden"])

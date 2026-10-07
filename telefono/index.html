@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#06121a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Jarvis">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icono.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icono.svg">
+<title>Jarvis</title>
+<style>
+  :root {
+    --fondo: #06121a; --panel: #0c1f2b; --borde: #18394a; --texto: #e6f7ff; --suave: #8fb3c4;
+    --acento: #38e1ff; --acento-osc: #0b6f86; --yo: #12384a; --error: #ff6b7a; --ok: #3ee08f;
+  }
+  :root[data-theme="light"] {
+    --fondo: #f3f8fb; --panel: #ffffff; --borde: #cfe1ea; --texto: #0d2430; --suave: #4f6d7b;
+    --acento: #0a8fb0; --acento-osc: #0a8fb0; --yo: #dff3fa; --error: #c62f43; --ok: #138a52;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--fondo); color: var(--texto);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; min-height: 100dvh;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+    padding-top: calc(14px + env(safe-area-inset-top));
+    border-bottom: 1px solid var(--borde); background: var(--panel);
+  }
+  .logo { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--acento);
+          box-shadow: 0 0 12px var(--acento-osc); display: grid; place-items: center; }
+  .logo::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--acento); }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+  .estado { margin-left: auto; font-size: 13px; color: var(--suave); display: flex; align-items: center; gap: 6px; }
+  .punto { width: 9px; height: 9px; border-radius: 50%; background: var(--suave); }
+  .punto.vivo { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .vacio { margin: auto; text-align: center; color: var(--suave); max-width: 320px; }
+  .burbuja { max-width: 85%; padding: 10px 13px; border-radius: 16px; white-space: pre-wrap;
+             overflow-wrap: anywhere; }
+  .yo { align-self: flex-end; background: var(--yo); border-bottom-right-radius: 4px; }
+  .el { align-self: flex-start; background: var(--panel); border: 1px solid var(--borde);
+        border-bottom-left-radius: 4px; }
+  .el.error { border-color: var(--error); }
+  .meta { font-size: 11px; color: var(--suave); margin-top: 4px; }
+  .pensando::after { content: "…"; animation: puntos 1.2s infinite; }
+  @keyframes puntos { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+  .rapidas { display: flex; gap: 8px; overflow-x: auto; padding: 8px 16px 0; scrollbar-width: none; }
+  .rapidas::-webkit-scrollbar { display: none; }
+  .rapidas button { flex: none; border: 1px solid var(--borde); background: var(--panel); color: var(--texto);
+                    border-radius: 999px; padding: 8px 12px; font: inherit; font-size: 14px; }
+  form { display: flex; gap: 8px; padding: 10px 16px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  input { flex: 1; min-width: 0; padding: 12px 14px; border-radius: 999px; border: 1px solid var(--borde);
+          background: var(--panel); color: var(--texto); font: inherit; }
+  input:focus { outline: 2px solid var(--acento); outline-offset: 1px; }
+  .boton { width: 46px; height: 46px; flex: none; border-radius: 50%; border: 0; display: grid; place-items: center;
+           background: var(--acento); color: #00222c; font-size: 20px; }
+  .boton.secundario { background: var(--panel); color: var(--acento); border: 1px solid var(--borde); }
+  .boton.grabando { background: var(--error); color: #fff; }
+  .boton:disabled { opacity: .5; }
+  .aviso { margin: 0 16px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--error);
+           color: var(--error); font-size: 14px; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo" aria-hidden="true"></div>
+  <h1>Jarvis</h1>
+  <div class="estado"><span class="punto" id="punto"></span><span id="estado">conectando…</span></div>
+</header>
+<main id="chat" aria-live="polite"></main>
+<div class="aviso" id="aviso" role="alert"></div>
+<div class="rapidas" id="rapidas"></div>
+<form id="forma" autocomplete="off">
+  <button type="button" class="boton secundario" id="mic" aria-label="Dictar">🎤</button>
+  <input id="texto" maxlength="500" placeholder="Dile algo a Jarvis…" aria-label="Orden para Jarvis">
+  <button type="submit" class="boton" id="enviar" aria-label="Enviar">➤</button>
+</form>
+<script>
+"use strict";
+// Lo que el teléfono necesita viene en el código QR, después del "#": esa parte de la
+// dirección nunca se manda a ningún servidor. Se guarda aquí y se borra de la barra.
+const CLAVE = "jarvis-remoto";
+const RAPIDAS = ["¿Qué pendientes tengo?", "Resumen del día", "¿Qué está sonando?", "Pausa la música",
+                 "Siguiente canción", "¿Cómo está el clima?", "¿Qué mensajes de WhatsApp me faltan?"];
+const $ = (id) => document.getElementById(id);
+
+function leer() {
+  try { return JSON.parse(localStorage.getItem(CLAVE) || "null"); } catch (e) { return null; }
+}
+function guardar(c) {
+  try { localStorage.setItem(CLAVE, JSON.stringify(c)); } catch (e) { /* sin almacenamiento: dura esta visita */ }
+}
+function olvidar() {
+  try { localStorage.removeItem(CLAVE); } catch (e) {}
+}
+
+let conf = leer();
+if (location.hash.length > 1) {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get("u") && p.get("k") && p.get("t")) {
+    conf = { u: p.get("u").replace(/\/+$/, ""), k: p.get("k"), t: p.get("t") };
+    guardar(conf);
+  }
+  history.replaceState(null, "", location.pathname + location.search);
+}
+
+function encabezados() {
+  const h = { "apikey": conf.k, "Content-Type": "application/json" };
+  if (conf.k.startsWith("eyJ")) h["Authorization"] = "Bearer " + conf.k;   // llave "anon" vieja
+  return h;
+}
+
+async function rpc(nombre, cuerpo) {
+  const r = await fetch(`${conf.u}/rest/v1/rpc/${nombre}`, {
+    method: "POST", headers: encabezados(), body: JSON.stringify(cuerpo), cache: "no-store",
+  });
+  const datos = await r.json().catch(() => null);
+  if (!r.ok) {
+    const msg = (datos && (datos.message || datos.hint)) || `error ${r.status}`;
+    const e = new Error(msg);
+    e.invalida = /llave inválida/.test(msg);
+    throw e;
+  }
+  return datos;
+}
+
+function aviso(texto) {
+  $("aviso").textContent = texto || "";
+  $("aviso").style.display = texto ? "block" : "none";
+}
+
+function hora(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+}
+
+function burbuja(clase, texto, meta) {
+  const b = document.createElement("div");
+  b.className = "burbuja " + clase;
+  b.textContent = texto;               // siempre como texto: nunca se interpreta como HTML
+  if (meta) {
+    const m = document.createElement("div");
+    m.className = "meta";
+    m.textContent = meta;
+    b.appendChild(m);
+  }
+  return b;
+}
+
+let ultimo = "";
+function pintar(filas) {
+  const firma = JSON.stringify(filas.map((f) => [f.id, f.estado, f.respuesta]));
+  if (firma === ultimo) return;
+  ultimo = firma;
+  const chat = $("chat");
+  const abajo = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
+  chat.replaceChildren();
+  if (!filas.length) {
+    const v = document.createElement("div");
+    v.className = "vacio";
+    v.textContent = "Pídele lo que quieras a Jarvis: está escuchando desde tu computadora.";
+    chat.appendChild(v);
+  }
+  for (const f of filas.slice().reverse()) {
+    chat.appendChild(burbuja("yo", f.texto, hora(f.creado)));
+    if (f.estado === "pendiente" || f.estado === "procesando") {
+      const b = burbuja("el pensando", f.estado === "pendiente" ? "Enviado" : "Pensando");
+      chat.appendChild(b);
+    } else {
+      chat.appendChild(burbuja("el" + (f.estado === "error" ? " error" : ""), f.respuesta || "Hecho.",
+                               hora(f.respondido)));
+    }
+  }
+  if (abajo) chat.scrollTop = chat.scrollHeight;
+}
+
+function enLinea(vivo, equipo) {
+  $("punto").classList.toggle("vivo", vivo);
+  $("estado").textContent = vivo ? `en línea${equipo ? " · " + equipo : ""}` : "PC apagada o sin internet";
+}
+
+let espera = null;
+async function actualizar() {
+  clearTimeout(espera);
+  try {
+    const h = await rpc("remoto_historial", { llave: conf.t });
+    const filas = h.ordenes || [];
+    pintar(filas);
+    enLinea(h.en_linea, h.equipo);
+    aviso("");
+    const ocupado = filas.some((f) => f.estado === "pendiente" || f.estado === "procesando");
+    espera = setTimeout(actualizar, document.hidden ? 15000 : ocupado ? 1200 : 4000);
+  } catch (e) {
+    if (e.invalida) { sinVincular("Este teléfono ya no está vinculado. Dile a Jarvis «conecta mi teléfono» y escanea el código nuevo."); olvidar(); return; }
+    aviso("Sin conexión con Jarvis: " + e.message);
+    enLinea(false);
+    espera = setTimeout(actualizar, 8000);
+  }
+}
+
+async function enviar(texto) {
+  texto = (texto || "").trim();
+  if (!texto) return;
+  $("texto").value = "";
+  $("enviar").disabled = true;
+  try {
+    await rpc("remoto_enviar", { llave: conf.t, texto });
+    ultimo = "";
+    await actualizar();
+  } catch (e) {
+    aviso(e.invalida ? "Este teléfono ya no está vinculado." : "No se pudo enviar: " + e.message);
+  } finally {
+    $("enviar").disabled = false;
+  }
+}
+
+function sinVincular(texto) {
+  $("chat").replaceChildren();
+  const v = document.createElement("div");
+  v.className = "vacio";
+  v.textContent = texto;
+  $("chat").appendChild(v);
+  for (const id of ["texto", "enviar", "mic"]) $(id).disabled = true;
+  $("rapidas").replaceChildren();
+  enLinea(false);
+  $("estado").textContent = "sin vincular";
+}
+
+// Dictado con el reconocimiento de voz del navegador (Chrome en Android, Safari en iPhone)
+function prepararMicrofono() {
+  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Rec) { $("mic").style.display = "none"; return; }
+  let rec = null;
+  $("mic").addEventListener("click", () => {
+    if (rec) { rec.stop(); return; }
+    rec = new Rec();
+    rec.lang = "es-MX";
+    rec.interimResults = true;
+    rec.onresult = (ev) => {
+      const t = Array.from(ev.results).map((r) => r[0].transcript).join("");
+      $("texto").value = t;
+      if (ev.results[ev.results.length - 1].isFinal) enviar(t);
+    };
+    rec.onend = () => { rec = null; $("mic").classList.remove("grabando"); };
+    rec.onerror = () => { aviso("No pude usar el micrófono del teléfono."); };
+    $("mic").classList.add("grabando");
+    rec.start();
+  });
+}
+
+function arrancar() {
+  if (!conf) {
+    sinVincular("Para usar esta página, dile a Jarvis en tu computadora «conecta mi teléfono» y escanea el código QR.");
+    return;
+  }
+  for (const r of RAPIDAS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = r;
+    b.addEventListener("click", () => enviar(r));
+    $("rapidas").appendChild(b);
+  }
+  $("forma").addEventListener("submit", (e) => { e.preventDefault(); enviar($("texto").value); });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) actualizar(); });
+  prepararMicrofono();
+  actualizar();
+}
+
+if (matchMedia("(prefers-color-scheme: light)").matches) document.documentElement.dataset.theme = "light";
+arrancar();
+</script>
+</body>
+</html>

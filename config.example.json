@@ -296,6 +296,12 @@
   "para_mi": {
     "callarse": 0.05
   },
+  "remoto": {
+    "activo": true,
+    "cada_seg": 2,
+    "hablar_en_pc": false,
+    "pagina": "https://abraham-src.github.io/jarvis-control/"
+  },
   "presentacion_max_contexto": 6000,
   "vocabulario_extra": [],
   "rutinas": {

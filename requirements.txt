@@ -75,5 +75,7 @@ winrt-Windows.Media.Control==3.2.1
 winrt-Windows.Devices.Geolocation==3.2.1   # tu ubicación (GPS / Wi-Fi) para el clima (clima.py)
 vgamepad==0.1.0   # control virtual de Xbox para jugar (juegos.py); instala el driver ViGEmBus
 cryptography==46.0.3       # respaldos cifrados con tu frase antes de subirlos a Supabase (respaldo.py)
+psycopg[binary]==3.3.6     # crear tablas nuevas en tu Supabase con la contraseña de la base (nube.ejecutar_sql)
+qrcode==8.2                # el código QR para vincular tu teléfono (remoto.py)
 
 # Opcional: Whisper en la GPU NVIDIA (mucho más rápido) → pip install -r requirements-gpu.txt

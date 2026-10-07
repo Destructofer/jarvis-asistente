@@ -464,6 +464,34 @@ y lo empieza a usar. Puedes tener varios personajes: "Jarvis, usa el avatar de I
 clasifica mal un GIF: "Jarvis, ese GIF es de celebrando". Detalles y categorías en
 `vaultboy/README.md`. Sin avatares se ve el reactor azul de siempre (`hud.estilo`).
 
+## Control desde el teléfono (`remoto.py`, Supabase)
+
+Dale órdenes a Jarvis desde tu teléfono, en cualquier lugar (no solo en tu Wi-Fi).
+
+1. **Vincular:** "Jarvis, conecta mi teléfono". La primera vez te abre Supabase para copiar la
+   *Publishable key* (no es secreta; se pide una sola vez). Luego abre un **código QR**: escanéalo
+   con la cámara del teléfono y agrega la página a tu pantalla de inicio. El QR se borra en 3 min.
+2. **Usar:** en https://abraham-src.github.io/jarvis-control/ escribes o dictas (🎤) una orden, o
+   tocas un botón rápido (pendientes, resumen del día, qué suena, pausa, clima, WhatsApp). Jarvis
+   la toma en ~2 s, la procesa como una orden escrita en la PC y te contesta ahí mismo (~4 s de
+   ida y vuelta). Arriba ves si la PC está en línea.
+3. **Revocar:** "Jarvis, desconecta mis teléfonos" (por ejemplo, si lo pierdes). "¿Mi teléfono está
+   conectado?" te dice cuántos hay y cuándo se usaron.
+
+**Seguridad.** El teléfono recibe una llave de 256 bits que va después del `#` de la dirección del
+QR: esa parte nunca se manda a ningún servidor, y la página la borra de la barra y la guarda solo en
+el teléfono. En Supabase solo queda su huella SHA-256. Las tablas (`supabase/remoto.sql`) están
+cerradas: con la llave pública no se pueden leer ni escribir; el teléfono solo puede usar dos
+funciones que exigen su llave (máx. 20 órdenes por minuto). **Desde el teléfono no se hace nada que
+pida confirmación** (apagar, reiniciar, borrar, cerrar sin guardar). La página es pública (repo
+`abraham-src/jarvis-control`) pero no contiene ninguna llave: sin tu QR no puede hacer nada, y todo
+lo que llega se muestra como texto (nunca como HTML).
+
+Las respuestas no suenan en la PC (`remoto.hablar_en_pc` en `config.json`), y las órdenes se
+borran a los 7 días. Las tablas nuevas se crean solas con la contraseña de la base guardada al
+conectar Supabase (`nube.ejecutar_sql`); en una instalación nueva, `conectar_supabase` ya las crea
+y guarda la llave pública.
+
 ## ¿Era para mí? Una red neuronal propia (`para_mi.py`)
 
 En modo conversación Jarvis escucha todo, también videos, juegos y pláticas con otras personas.

@@ -27,6 +27,8 @@ from skills import Fallo, skill
 BASE = Path(__file__).parent
 CREDENCIALES = BASE / "datos" / "nube.json"
 ESQUEMA = BASE / "supabase" / "esquema.sql"
+ESQUEMAS_EXTRA = [BASE / "supabase" / "remoto.sql"]   # control desde el teléfono (remoto.py)
+BD = BASE / "datos" / "supabase_bd.json"               # ref y contraseña de la base (DPAPI)
 BUCKET = "respaldos"
 EQUIPO = re.sub(r"[^A-Za-z0-9_-]", "-", socket.gethostname())[:40] or "pc"
 _cache = {"datos": None, "t": 0.0, "lista": None}
@@ -246,14 +248,15 @@ def configurar_automatico(token, frase, avisar=print, espera_seg=420):
             return False, "El proyecto de Supabase no terminó de arrancar; vuelve a intentarlo en unos minutos."
         time.sleep(8)
     # Esquema (idempotente) y claves
-    _api(token, "POST", f"/projects/{ref}/database/query",
-         json={"query": ESQUEMA.read_text(encoding="utf-8")}, timeout=120)
+    for ruta in [ESQUEMA] + ESQUEMAS_EXTRA:
+        _api(token, "POST", f"/projects/{ref}/database/query",
+             json={"query": ruta.read_text(encoding="utf-8")}, timeout=120)
     llaves = _api(token, "GET", f"/projects/{ref}/api-keys?reveal=true")
     clave = _clave_secreta(llaves or [])
     if not clave:
         return False, "Creé el proyecto pero no encontré su clave secreta; dime y lo reviso."
     url = f"https://{ref}.supabase.co"
-    datos = {"url": url, "clave": clave, "frase": frase}
+    datos = {"url": url, "clave": clave, "frase": frase, "publica": _clave_publica(llaves or [])}
     fin = time.time() + 90   # la API REST tarda unos segundos en ver la tabla nueva
     while estado_tabla(datos) != "lista":
         if time.time() > fin:
@@ -264,6 +267,66 @@ def configurar_automatico(token, frase, avisar=print, espera_seg=420):
     asegurar_bucket(datos)
     return True, ("Listo: tu proyecto jarvis de Supabase quedó conectado. Ya guardo una copia de tu "
                   "memoria y un respaldo cifrado al día. Guarda bien tu frase.")
+
+
+def _clave_publica(llaves):
+    """La llave pública del proyecto (sb_publishable_... o la anon legacy): la usa la página del
+    teléfono; no es secreta (sin la llave del teléfono no puede hacer nada)."""
+    for k in llaves:
+        if k.get("type") == "publishable" and k.get("api_key"):
+            return k["api_key"]
+    for k in llaves:
+        if k.get("name") == "anon" and k.get("api_key"):
+            return k["api_key"]
+    return ""
+
+
+def clave_publica():
+    return credenciales().get("publica", "")
+
+
+def guardar_clave_publica(clave):
+    """Valida y guarda la llave pública (la que se copia del panel de Supabase)."""
+    clave = "".join((clave or "").split())
+    if not (clave.startswith("sb_publishable_") or (clave.startswith("eyJ") and '"anon"' in _jwt_rol(clave))):
+        raise NubeError("Esa no es la llave pública: empieza con sb_publishable_ (o es la 'anon').")
+    datos = dict(credenciales())
+    datos["publica"] = clave
+    guardar_json(CREDENCIALES, datos)
+    _cache.update(datos=datos, t=time.time())
+    return clave
+
+
+def pagina_llaves():
+    """Página del panel de Supabase donde está la llave pública de este proyecto."""
+    ref = (leer_json(BD) or {}).get("ref") or re.sub(r"^https://|\.supabase\.co.*$", "", credenciales().get("url", ""))
+    return f"https://supabase.com/dashboard/project/{ref}/settings/api-keys"
+
+
+def ejecutar_sql(sql, timeout=30):
+    """Corre SQL en la base con la contraseña guardada al crear el proyecto (por el pooler, que
+    sí funciona con IPv4). Sirve para crear tablas nuevas sin pedir otro token."""
+    import psycopg
+    d = leer_json(BD) or {}
+    if not d.get("ref") or not d.get("db_pass"):
+        raise NubeError("No tengo la contraseña de la base de datos (se guarda al conectar Supabase).")
+    ultimo = None
+    for host in (f"aws-0-{REGION}.pooler.supabase.com", f"aws-1-{REGION}.pooler.supabase.com"):
+        try:
+            with psycopg.connect(host=host, port=5432, dbname="postgres", user=f"postgres.{d['ref']}",
+                                 password=d["db_pass"], connect_timeout=10, sslmode="require",
+                                 options=f"-c statement_timeout={int(timeout * 1000)}") as con:
+                con.execute(sql)
+                return True
+        except psycopg.OperationalError as e:
+            ultimo = e   # otro pooler, por si el proyecto quedó en el otro
+    raise NubeError(f"No pude conectarme a la base: {str(ultimo)[:120]}")
+
+
+def asegurar_esquemas_extra():
+    """Crea (o actualiza) las tablas de los módulos nuevos. Idempotente."""
+    for ruta in ESQUEMAS_EXTRA:
+        ejecutar_sql(ruta.read_text(encoding="utf-8"))
 
 
 def _jwt_rol(clave):
