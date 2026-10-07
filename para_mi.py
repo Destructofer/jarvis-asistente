@@ -15,10 +15,16 @@ decisiones del modelo grande y de las reglas, con ejemplos limpios:
 Red: granite-embedding (preentrenada, 768 números por frase) -> MLP de 2 capas -> probabilidad.
 
 Cómo se usa (genesis._no_es_para_mi), solo con lo dicho SIN llamarlo:
-- prob <= umbral_bajo (calibrado: ~97% de esos de verdad no eran para él): se calla al instante,
-  sin gastar la nube.
-- sin internet y prob >= umbral_alto: contesta con el modelo local (antes se callaba siempre).
+- prob <= config para_mi.callarse (5% por omisión; 0 lo apaga): se calla al instante, sin gastar
+  la nube. Medido con tus frases (validación cruzada): silencia ~40% del ruido de fondo y de lo
+  que silencia, 83-91% de verdad no era para él; ignoraría ~5-7% de los seguimientos reales
+  (los repites con "Jarvis").
+- sin internet y prob >= umbral alto (calibrado al 97%): contesta el modelo local (antes se
+  callaba con todo).
 - en medio: decide el modelo, como antes.
+
+Aprende de sus errores: si silencia algo y en los siguientes 30 s lo repites llamándolo por su
+nombre, queda como corrección (datos/para_mi/correcciones.jsonl) y entra como "sí" al reentrenar.
 
 Entrenar: python para_mi.py entrenar   (o "Jarvis, reentrena tu detector")
 Probar:   python para_mi.py probar "y luego qué pasó con el carro"
@@ -48,11 +54,15 @@ CODIFICADOR = "granite-embedding:278m"
 GENERADOR = "qwen2.5:7b"               # local y abierto
 PRECISION = 0.97                       # lo que se exige a las decisiones que se toman sin el modelo
 MAX_ORDENES = 900                      # órdenes de práctica que entran (para no desbalancear)
+CORRECCIONES = CARPETA / "correcciones.jsonl"
+CALLARSE = 0.05                        # por omisión (config: para_mi.callarse)
+VENTANA_CORRECCION = 30                # s para repetir con "Jarvis" algo que silenció
 
 hablar = None                          # lo pone genesis.py: fn(texto) al terminar de entrenar
 _estado = {"modelo": None, "entrenando": False}
 _lock = threading.Lock()
 _cache = OrderedDict()                 # texto -> vector (lo último que se codificó)
+_silenciados = []                      # [(ts, texto)] lo último que silenció (para las correcciones)
 
 # Ruido de fondo y seguimientos de práctica: (categoría, si/no era para Jarvis, instrucción)
 CATEGORIAS = [
@@ -223,7 +233,7 @@ def umbrales(probs, etiquetas, precision=PRECISION):
     return min(bajo, 0.5), max(alto, 0.5)
 
 
-def entrenar(avisar=print, generar=True, datos=None):
+def entrenar(avisar=print, generar=True, datos=None, callarse=CALLARSE):
     """Entrena con validación cruzada (5 partes) sobre TUS frases reales para medir y calibrar
     los umbrales, y al final con todo. datos=(si, no, dudosos, si_practica, no_practica) para pruebas."""
     import joblib
@@ -233,6 +243,8 @@ def entrenar(avisar=print, generar=True, datos=None):
         except OSError:
             lineas = []
         si, no, dudosos = del_registro(lineas)
+        si = [t for t in si if len(t.split()) >= 3] + correcciones()
+        no = [t for t in no if len(t.split()) >= 3]
         si_p, no_p = de_practica(avisar, generar)
     else:
         si, no, dudosos, si_p, no_p = datos
@@ -256,20 +268,23 @@ def entrenar(avisar=print, generar=True, datos=None):
         ys += [y for _, y in prueba]
     probs, ys = np.array(probs), np.array(ys)
     bajo, alto = umbrales(probs, ys)
+    calla = probs <= callarse
     met = {"si": len(si), "no": len(no), "si_practica": len(si_p), "no_practica": len(no_p),
            "exactitud": round(float(((probs >= 0.5) == ys).mean()), 3),
-           "bajo": round(bajo, 3), "alto": round(alto, 3),
-           # de lo que de verdad NO era para él, cuánto se calla sin gastar la nube
-           "callados_sin_nube": round(float((probs[ys == 0] <= bajo).mean()), 3),
-           # de lo que SÍ era para él, cuánto se callaría por error
-           "perdidos": round(float((probs[ys == 1] <= bajo).mean()), 3),
+           "bajo": round(bajo, 3), "alto": round(alto, 3), "callarse": callarse,
+           # con el umbral que se usa: de lo que NO era para él, cuánto se calla sin la nube...
+           "callados_sin_nube": round(float(calla[ys == 0].mean()), 3),
+           # ...de lo que calla, cuánto de verdad no era para él...
+           "acierto_al_callar": round(float((ys[calla] == 0).mean()), 3) if calla.any() else None,
+           # ...y de lo que SÍ era para él, cuánto se callaría por error
+           "perdidos": round(float(calla[ys == 1].mean()), 3),
            "fecha": time.strftime("%Y-%m-%d %H:%M")}
     todo = reales * 3 + practica
     red = _red(len(todo)).fit(np.vstack([V[t] for t, _ in todo]), [y for _, y in todo])
     if dudosos:   # lo que contestó sin que lo llamaras: ¿cuántos parecen videos o pláticas?
         pd = red.predict_proba(codificar(dudosos))[:, 1]
         met["dudosos"] = len(dudosos)
-        met["dudosos_que_callaria"] = int((pd <= bajo).sum())
+        met["dudosos_que_callaria"] = int((pd <= callarse).sum())
         met["ejemplos_dudosos"] = [t for t, p in sorted(zip(dudosos, pd), key=lambda x: x[1])[:6]]
     MODELO.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({"red": red, "metricas": met, "version": 1}, MODELO)
@@ -304,25 +319,71 @@ def probabilidad(texto):
         return None
 
 
-def decidir(texto):
-    """'no' (callarse sin preguntarle al modelo), 'si' (era para él) o None (que decida el modelo)."""
+def decidir(texto, callarse=CALLARSE):
+    """'no' (callarse sin preguntarle al modelo), 'si' (muy segura de que era para él) o None
+    (que decida el modelo)."""
     p = probabilidad(texto)
     if p is None:
         return None
     met = _cargar()["metricas"]
-    if p <= met["bajo"]:
+    if p <= callarse:
         print(f"[¿Para mí? no ({p:.0%})]")
+        _silenciados.append((time.time(), quitar_nombre(texto)))
+        del _silenciados[:-10]
         return "no"
     if p >= met["alto"]:
         return "si"
     return None
 
 
+def _palabras(t):
+    return {w for w in re.findall(r"\w+", (t or "").lower()) if len(w) > 2}
+
+
+def llamado(texto, ahora=None):
+    """Lo llamaste por su nombre: si repite algo que la red silenció hace poco, fue un error de
+    la red y queda como corrección. Devuelve True si se anotó una."""
+    ahora = time.time() if ahora is None else ahora
+    nuevo = _palabras(quitar_nombre(texto))
+    for ts, viejo in reversed(_silenciados):
+        if ahora - ts > VENTANA_CORRECCION:
+            continue
+        a = _palabras(viejo)
+        if a and nuevo and len(a & nuevo) / len(a | nuevo) >= 0.5:
+            CARPETA.mkdir(parents=True, exist_ok=True)
+            with open(CORRECCIONES, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": ahora, "texto": viejo}, ensure_ascii=False) + "\n")
+            _silenciados.remove((ts, viejo))
+            print(f"[¿Para mí?: me equivoqué con «{viejo[:60]}»; lo anoto para aprender]")
+            return True
+    return False
+
+
+def correcciones():
+    try:
+        lineas = CORRECCIONES.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    salida = []
+    for l in lineas:
+        try:
+            salida.append(json.loads(l)["texto"])
+        except (ValueError, KeyError):
+            pass
+    return salida
+
+
 def describir(m):
-    return (f"Listo: aprendí con {m['si']} frases que sí eran para mí y {m['no']} que no, más "
-            f"{m['si_practica'] + m['no_practica']} de práctica. Con frases tuyas que no había visto acierto "
-            f"{m['exactitud']:.0%}. Me callo solo, sin gastar la nube, en {m['callados_sin_nube']:.0%} de lo "
-            f"que no es para mí, y me equivocaría callándome en {m['perdidos']:.0%} de lo que sí.")
+    texto = (f"Listo: aprendí con {m['si']} frases que sí eran para mí y {m['no']} que no, más "
+             f"{m['si_practica'] + m['no_practica']} de práctica. Con frases tuyas que no había visto acierto "
+             f"{m['exactitud']:.0%}.")
+    if m.get("acierto_al_callar") is not None:
+        texto += (f" Me callo solo, sin gastar la nube, en {m['callados_sin_nube']:.0%} de lo que no es para "
+                  f"mí (acertando {m['acierto_al_callar']:.0%} de esas veces) y me equivocaría callándome en "
+                  f"{m['perdidos']:.0%} de lo que sí.")
+    else:
+        texto += " Con el umbral actual casi nunca me callo solo: lo sigue decidiendo el modelo."
+    return texto
 
 
 @skill("entrenar_detector",

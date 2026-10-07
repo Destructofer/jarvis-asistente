@@ -464,6 +464,27 @@ y lo empieza a usar. Puedes tener varios personajes: "Jarvis, usa el avatar de I
 clasifica mal un GIF: "Jarvis, ese GIF es de celebrando". Detalles y categorías en
 `vaultboy/README.md`. Sin avatares se ve el reactor azul de siempre (`hud.estilo`).
 
+## ¿Era para mí? Una red neuronal propia (`para_mi.py`)
+
+En modo conversación Jarvis escucha todo, también videos, juegos y pláticas con otras personas.
+Antes cada frase dudosa se la preguntaba al modelo en la nube (~0.8 s y cuota), y a veces
+contestaba igual a la narración de un video. Ahora una **red neuronal local** decide primero
+(~30 ms): `granite-embedding` (red preentrenada que convierte la frase en 768 números) → una red
+de 2 capas entrenada con **tus** frases.
+
+- **Datos** (todo local, en `datos/para_mi/`, no se sube al repo): lo que le dijiste llamándolo
+  (sí era para él, sin el "Jarvis"), lo que el micrófono captó saliendo de la computadora y lo
+  que el modelo descartó (no era para él), más frases de práctica generadas en tu PC con
+  `qwen2.5:7b`: órdenes, seguimientos, videos, llamadas, clases, canciones, tele.
+- **Medido con frases tuyas que no vio** (validación cruzada de 5 partes): acierta 78%. Con el
+  umbral por omisión (`para_mi.callarse` = 0.05 en `config.json`; 0 lo apaga) silencia 45% del ruido
+  de fondo sin gastar la nube, acierta 90% de esas veces e ignoraría 4% de los seguimientos reales.
+- **Aprende de sus errores**: si silencia algo y lo repites llamándolo "Jarvis" en los siguientes
+  30 s, queda como corrección y entra al reentrenar ("Jarvis, reentrena tu detector" o
+  `python para_mi.py entrenar`).
+- **Sin internet**, si la red está 97% segura de que era para él, contesta el modelo local en
+  vez de callarse (hoy todavía no llega a ese nivel; con correcciones puede).
+
 ## Jarvis juega (`juegos.py`) y nunca dice que hizo lo que no hizo (`bitacora.py`)
 
 **Botones de verdad.** Jarvis aprieta botones en el juego que está al frente con un **control

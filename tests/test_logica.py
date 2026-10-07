@@ -2246,3 +2246,68 @@ class JarvisJuega(unittest.TestCase):
         self.J._juego_al_frente = lambda: ("code.exe", "Visual Studio Code")   # sin juego al frente
         self.assertIsNone(genesis.atajo_juego("atrás adelante dos"))
 
+
+
+class DetectorParaMi(unittest.TestCase):
+    """para_mi.py: red local que decide si lo dicho sin llamarlo era para Jarvis."""
+
+    def _vec(self, texto):
+        t = skills._norm(texto)
+        orden = sum(p in t for p in ("abre", "pon", "dime", "busca", "cuanto", "siguiente"))
+        fondo = sum(p in t for p in ("video", "suscribete", "mama", "canal", "partido", "gol"))
+        v = np.array([orden, fondo, 0.1], dtype=np.float32)
+        v = v + np.random.RandomState(abs(hash(t)) % 2 ** 31).normal(0, 0.05, 3).astype(np.float32)
+        return v / np.linalg.norm(v)
+
+    def setUp(self):
+        import para_mi
+        self.P = para_mi
+        carpeta = Path(tempfile.mkdtemp())
+        self._orig = (para_mi.MODELO, para_mi.CORRECCIONES, para_mi.codificar)
+        para_mi.MODELO, para_mi.CORRECCIONES = carpeta / "modelo.joblib", carpeta / "correcciones.jsonl"
+        para_mi.codificar = lambda textos: np.vstack([self._vec(t) for t in textos])
+        para_mi._estado["modelo"] = None
+        para_mi._silenciados.clear()
+
+    def tearDown(self):
+        self.P.MODELO, self.P.CORRECCIONES, self.P.codificar = self._orig
+        self.P._estado["modelo"] = None
+        self.P._silenciados.clear()
+
+    def test_quita_el_nombre(self):
+        self.assertEqual(self.P.quitar_nombre("Oye Jarvis, abre Teams"), "abre Teams")
+        self.assertEqual(self.P.quitar_nombre("abre Teams, Jarvis"), "abre Teams")
+
+    def test_lee_el_registro(self):
+        lineas = ["Tú: Jarvis, abre Teams por favor", "[Skill] teams_abrir {}",
+                  "[Ignoro «suscríbete a mi canal y dale like»: venía de la computadora, no de ti]",
+                  "Tú (sin llamarme): y el partido de ayer qué", "[No era para mí: me quedo callado]",
+                  "Tú (sin llamarme): en el video se ve un carro", "Jarvis: Qué interesante.",
+                  "Tú (sin llamarme): pásame la sal", "[La red dice que no era para mí: me quedo callado]"]
+        si, no, dudosos = self.P.del_registro(lineas)
+        self.assertEqual(si, ["abre Teams por favor"])
+        self.assertEqual(no, ["suscríbete a mi canal y dale like", "y el partido de ayer qué"])
+        self.assertEqual(dudosos, ["en el video se ve un carro"])   # lo que silencia la red no se reaprende
+
+    def test_umbrales(self):
+        probs = [0.01, 0.02, 0.03, 0.04, 0.05, 0.5, 0.97, 0.98, 0.99, 0.995, 0.999]
+        ys = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+        self.assertEqual(self.P.umbrales(probs, ys), (0.05, 0.5))
+        self.assertEqual(self.P.umbrales([0.1] * 10, [0, 1] * 5), (0.0, 1.0))   # nunca seguro
+
+    def test_entrena_decide_y_aprende_de_sus_errores(self):
+        si = ["abre el correo ahora", "pon música de Bad Bunny", "dime el clima de hoy", "busca recetas de pozole",
+              "cuánto cuesta el dólar", "la siguiente canción porfa"] * 4
+        no = ["en este video vamos a ver", "suscríbete a mi canal amigos", "mamá ya voy a comer",
+              "qué golazo en el partido", "dale like al video", "gol gol gol del américa"] * 4
+        m = self.P.entrenar(lambda *_: None, datos=(si, no, ["en el video se ve un carro"],
+                                                     ["abre spotify", "pon la siguiente"], ["canal de cocina"]))
+        self.assertGreaterEqual(m["exactitud"], 0.9)
+        self.assertEqual(self.P.decidir("suscríbete al canal y mira el video", callarse=0.2), "no")
+        self.assertNotEqual(self.P.decidir("abre el correo y dime qué hay", callarse=0.2), "no")
+        self.assertIsNone(self.P.decidir("suscríbete al canal", callarse=0.0))   # 0 = apagado
+        # la red silenció algo y lo repetiste llamándolo: corrección
+        self.P._silenciados.append((time.time(), "pon el video de cocina"))
+        self.assertTrue(self.P.llamado("Jarvis, pon el video de cocina"))
+        self.assertEqual(self.P.correcciones(), ["pon el video de cocina"])
+        self.assertFalse(self.P.llamado("Jarvis, qué hora es"))
