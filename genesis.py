@@ -142,7 +142,7 @@ def _no_es_para_mi(cfg, texto):
         return "Frase corta que no me pide nada"
     # La red local (para_mi.py, ~30 ms): si está segura de que no era para él, se calla sin
     # gastar la nube; sin internet, si está segura de que sí, contesta el modelo local
-    veredicto = para_mi.decidir(texto)
+    veredicto = para_mi.decidir(texto, float((cfg.get("para_mi") or {}).get("callarse", para_mi.CALLARSE)))
     if veredicto == "no":
         return "La red dice que no era para mí"
     if not cerebro.nube_disponible(cfg) and veredicto != "si":
@@ -2115,6 +2115,8 @@ def main(persistente=False):
                 al_publico = True  # el modelo solo decide: callarse o complementar
         if not escrito:
             print(f"Tú{' (sin llamarme)' if seguimiento else ''}: {user}")
+            if not seguimiento:
+                para_mi.llamado(user)   # ¿repites algo que la red silenció? fue su error: lo aprende
         if not escrito and _es_ruido(user):
             print("[Ignorado: no parece una orden]\n")
             hud.estado("escuchando" if en_conversacion() else "inactivo")

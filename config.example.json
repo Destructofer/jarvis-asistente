@@ -293,6 +293,9 @@
     "vault_aleatorio": true,
     "vigilar_descargas": true
   },
+  "para_mi": {
+    "callarse": 0.05
+  },
   "presentacion_max_contexto": 6000,
   "vocabulario_extra": [],
   "rutinas": {
