@@ -163,6 +163,103 @@ def conectar(url, clave, frase, avisar=print, abrir_editor=True):
     return True, "Listo, Supabase quedó conectado: tu memoria y tus respaldos ya se guardan en la nube."
 
 
+# ---------- Configuración automática (Management API de Supabase) ----------
+API = "https://api.supabase.com/v1"
+NOMBRE_PROYECTO = "jarvis"
+REGION = "us-east-1"   # la más cercana a México de las del plan gratis, ~60 ms
+
+
+def _api(token, metodo, ruta, **kw):
+    import httpx
+    r = httpx.request(metodo, API + ruta, headers={"Authorization": f"Bearer {token}"},
+                      timeout=kw.pop("timeout", 60), **kw)
+    if r.status_code >= 400:
+        raise NubeError(f"{r.status_code}: {r.text[:200]}")
+    return r.json() if r.content else None
+
+
+def _clave_secreta(llaves):
+    """La clave secreta del proyecto: la nueva (sb_secret_...) o la service_role (legacy)."""
+    for k in llaves:
+        if k.get("type") == "secret" and k.get("api_key"):
+            return k["api_key"]
+    for k in llaves:
+        if k.get("name") == "service_role" and k.get("api_key"):
+            return k["api_key"]
+    return ""
+
+
+def configurar_automatico(token, frase, avisar=print, espera_seg=420):
+    """Con un token de acceso de la cuenta (no se guarda): crea o reutiliza el proyecto
+    "jarvis", corre el esquema, toma la clave secreta y deja todo conectado.
+    Devuelve (ok, qué decir)."""
+    import secrets
+    token = "".join((token or "").split())
+    frase = (frase or "").strip()
+    if not token.startswith("sbp_"):
+        return False, ("Eso no parece un token de acceso de Supabase (empieza con sbp_). Lo generas en "
+                       "Account, Access Tokens.")
+    if len(frase) < 8:
+        return False, "La frase para cifrar tus respaldos debe tener al menos 8 caracteres."
+    try:
+        proyectos = _api(token, "GET", "/projects")
+    except NubeError as e:
+        return False, ("Supabase no aceptó el token." if "401" in str(e) else f"No pude hablar con Supabase ({e}).")
+    proyecto = next((x for x in proyectos if x.get("name") == NOMBRE_PROYECTO), None)
+    if proyecto is None:
+        organizaciones = _api(token, "GET", "/organizations")
+        if not organizaciones:
+            return False, "Tu cuenta de Supabase no tiene organización; entra una vez al panel para crearla."
+        org = organizaciones[0]
+        clave_bd = secrets.token_urlsafe(24)   # contraseña de la base: solo para emergencias
+        avisar("Estoy creando tu proyecto de Supabase; tarda uno o dos minutos.")
+        try:
+            proyecto = _api(token, "POST", "/projects", json={
+                "name": NOMBRE_PROYECTO, "organization_id": org.get("id") or org.get("slug"),
+                "db_pass": clave_bd, "region": REGION})
+        except NubeError as e:
+            if "limit" in str(e).lower() or "maximum" in str(e).lower():
+                return False, ("Tu cuenta gratis ya tiene el máximo de proyectos activos (2). Pausa o "
+                               "borra uno en supabase.com, o dime cuál usar.")
+            return False, f"Supabase no me dejó crear el proyecto ({e})."
+        guardar_json(BASE / "datos" / "supabase_bd.json", {"ref": proyecto.get("id") or proyecto.get("ref"),
+                                                          "db_pass": clave_bd})
+    ref = proyecto.get("id") or proyecto.get("ref")
+    # Esperar a que esté listo
+    fin = time.time() + espera_seg
+    while True:
+        estado = (_api(token, "GET", f"/projects/{ref}") or {}).get("status", "")
+        if estado == "ACTIVE_HEALTHY":
+            break
+        if estado in ("INACTIVE", "PAUSED"):
+            try:
+                _api(token, "POST", f"/projects/{ref}/restore")
+            except NubeError:
+                pass
+        if time.time() > fin:
+            return False, "El proyecto de Supabase no terminó de arrancar; vuelve a intentarlo en unos minutos."
+        time.sleep(8)
+    # Esquema (idempotente) y claves
+    _api(token, "POST", f"/projects/{ref}/database/query",
+         json={"query": ESQUEMA.read_text(encoding="utf-8")}, timeout=120)
+    llaves = _api(token, "GET", f"/projects/{ref}/api-keys?reveal=true")
+    clave = _clave_secreta(llaves or [])
+    if not clave:
+        return False, "Creé el proyecto pero no encontré su clave secreta; dime y lo reviso."
+    url = f"https://{ref}.supabase.co"
+    datos = {"url": url, "clave": clave, "frase": frase}
+    fin = time.time() + 90   # la API REST tarda unos segundos en ver la tabla nueva
+    while estado_tabla(datos) != "lista":
+        if time.time() > fin:
+            return False, "La tabla no aparece todavía en la API de Supabase; vuelve a intentarlo en un rato."
+        time.sleep(5)
+    guardar_json(CREDENCIALES, datos)
+    _cache.update(datos=datos, t=time.time(), lista=True)
+    asegurar_bucket(datos)
+    return True, ("Listo: tu proyecto jarvis de Supabase quedó conectado. Ya guardo una copia de tu "
+                  "memoria y un respaldo cifrado al día. Guarda bien tu frase.")
+
+
 def _jwt_rol(clave):
     import base64
     import json
@@ -185,29 +282,35 @@ def lista():
 
 @skill("conectar_supabase",
        "Conecta Supabase (la nube de Jarvis) para guardar una copia de su memoria y respaldos "
-       "cifrados: abre ventanitas para la URL del proyecto, la clave secreta y una frase para "
-       "cifrar los respaldos. Úsala con 'conecta Supabase', 'vincula la nube'.",
+       "cifrados: abre la página para generar un token de acceso (se entra con GitHub) y Jarvis "
+       "crea y configura solo el proyecto. Úsala con 'conecta Supabase', 'vincula la nube'.",
        requeridos=[])
 def conectar_supabase():
     import panel
     avisar = hablar or print
+    webbrowser.open("https://supabase.com/dashboard/account/tokens")
 
-    def con_url(url):
-        def con_clave(clave):
-            def con_frase(frase):
-                ok, aviso = conectar(url, clave, frase, avisar)
+    def con_token(token):
+        def con_frase(frase):
+            def trabajar():
+                try:
+                    ok, aviso = configurar_automatico(token, frase, avisar)
+                except Exception as e:
+                    aviso = f"Algo falló al configurar Supabase ({type(e).__name__}: {str(e)[:120]})."
                 avisar(aviso)
-            panel.pedir_texto("Frase para cifrar tus respaldos",
-                              "Inventa una frase (8+ caracteres) y guárdala: la necesitarás para "
-                              "recuperar tus respaldos en otra computadora.", con_frase, lambda: None,
-                              oculto=True)
-        panel.pedir_texto("Clave secreta de Supabase",
-                          "Settings > API Keys > secret (sb_secret_...) o service_role (legacy). "
-                          "Se guarda cifrada en tu PC.", con_clave, lambda: None, oculto=True)
-    panel.pedir_texto("Conectar Supabase", "La URL de tu proyecto (https://xxxx.supabase.co):",
-                      con_url, lambda: None)
-    return ("Te abrí la ventanita: pon la URL de tu proyecto de Supabase, luego la clave secreta "
-            "(Settings, API Keys) y una frase para cifrar tus respaldos.")
+                if aviso.startswith("Listo"):
+                    import respaldo
+                    threading.Thread(target=lambda: avisar(str(respaldo.respaldar())), daemon=True).start()
+            threading.Thread(target=trabajar, daemon=True, name="configurar-supabase").start()
+        panel.pedir_texto("Frase para cifrar tus respaldos",
+                          "Inventa una frase (8+ caracteres) y GUÁRDALA: sin ella no se pueden recuperar "
+                          "tus respaldos en otra computadora.", con_frase, lambda: None, oculto=True)
+    panel.pedir_texto("Token de acceso de Supabase",
+                      "Entra con GitHub, ve a Access Tokens > Generate new token, ponle Jarvis y pégalo "
+                      "aquí (empieza con sbp_). Solo se usa para configurar; no se guarda.",
+                      con_token, lambda: None, oculto=True)
+    return ("Te abrí Supabase: entra con tu GitHub, genera un token de acceso llamado Jarvis y pégalo "
+            "en la ventanita. Después pon una frase para cifrar tus respaldos y yo hago lo demás.")
 
 
 @skill("estado_nube",

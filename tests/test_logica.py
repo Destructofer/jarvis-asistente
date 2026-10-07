@@ -2079,3 +2079,65 @@ class ConectarSupabase(unittest.TestCase):
         self.assertIn("vector(768)", sql)
         self.assertIn("buscar_recuerdos", sql)
         self.assertNotIn("drop table", sql.lower())
+
+
+class SupabaseAutomatico(unittest.TestCase):
+    """configurar_automatico con la API de Supabase simulada."""
+
+    def setUp(self):
+        import nube
+        self.N = nube
+        self._orig = (nube._api, nube.estado_tabla, nube.guardar_json, nube.asegurar_bucket, nube.time.sleep)
+        self.guardado = {}
+        nube.guardar_json = lambda ruta, datos: self.guardado.update({Path(ruta).name: datos})
+        nube.estado_tabla = lambda datos=None: "lista"
+        nube.asegurar_bucket = lambda datos=None: None
+        nube.time.sleep = lambda s: None
+        self.llamadas = []
+
+    def tearDown(self):
+        (self.N._api, self.N.estado_tabla, self.N.guardar_json, self.N.asegurar_bucket,
+         self.N.time.sleep) = self._orig
+        self.N._cache.update(datos=None, lista=None)
+
+    def _api_falsa(self, proyectos, crear_error=None):
+        def api(token, metodo, ruta, **kw):
+            self.llamadas.append((metodo, ruta))
+            if ruta == "/projects" and metodo == "GET":
+                return proyectos
+            if ruta == "/organizations":
+                return [{"id": "org1", "name": "abraham"}]
+            if ruta == "/projects" and metodo == "POST":
+                if crear_error:
+                    raise self.N.NubeError(crear_error)
+                return {"id": "nuevoref123456789012"}
+            if ruta.endswith("/database/query"):
+                return []
+            if "api-keys" in ruta:
+                return [{"name": "anon", "type": "publishable", "api_key": "sb_publishable_x"},
+                        {"name": "default", "type": "secret", "api_key": "sb_secret_y"}]
+            if ruta.startswith("/projects/"):
+                return {"status": "ACTIVE_HEALTHY"}
+        return api
+
+    def test_crea_el_proyecto_y_guarda_solo_la_clave_del_proyecto(self):
+        self.N._api = self._api_falsa([])
+        ok, aviso = self.N.configurar_automatico("sbp_" + "a" * 40, "mi frase larga", avisar=lambda t: None)
+        self.assertTrue(ok, aviso)
+        self.assertIn(("POST", "/projects"), self.llamadas)
+        datos = self.guardado["nube.json"]
+        self.assertEqual(datos["url"], "https://nuevoref123456789012.supabase.co")
+        self.assertEqual(datos["clave"], "sb_secret_y")          # la secreta, no la pública
+        self.assertNotIn("sbp_", str(self.guardado))             # el token de la cuenta no se guarda
+
+    def test_reutiliza_el_proyecto_jarvis(self):
+        self.N._api = self._api_falsa([{"id": "yaexiste12345678901x", "name": "jarvis"}])
+        ok, _ = self.N.configurar_automatico("sbp_" + "a" * 40, "mi frase larga", avisar=lambda t: None)
+        self.assertTrue(ok)
+        self.assertNotIn(("POST", "/projects"), self.llamadas)
+
+    def test_limite_de_proyectos_gratis(self):
+        self.N._api = self._api_falsa([], crear_error="402: The maximum limit of 2 free projects")
+        ok, aviso = self.N.configurar_automatico("sbp_" + "a" * 40, "mi frase larga", avisar=lambda t: None)
+        self.assertFalse(ok)
+        self.assertIn("máximo", aviso)
