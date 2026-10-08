@@ -476,7 +476,14 @@ clasifica mal un GIF: "Jarvis, ese GIF es de celebrando". Detalles y categorías
 - **"¿Qué me dijo Ana?"**: abre el chat (queda como leído) y te lo resume.
 - **"Escríbeme a mí"** usa tu propio chat (el de "(You)"), útil para notas.
 
-Si hay varios chats parecidos ("Ana López" y "Ana Sofía"), pregunta cuál. **Seguridad:** antes de
+**Nombres mal entendidos:** Whisper escribe los nombres como suenan ("Yun Cook" llega como
+"jumcook") y WhatsApp solo busca letras exactas. Jarvis compara por **sonido en español** (y/j/ll,
+m/n, c/k/q, b/v, h muda, "oo"="u": "jumcook" = "Yun Cook" = `yunkuk`), contra una agenda local de
+los nombres que ha visto en tu WhatsApp (`datos/whatsapp_contactos.json`, no se sube); si no está,
+busca pedazos del nombre ("cook", "jumc"...) y se queda con el más parecido. Siempre va al más
+parecido, y la confirmación muestra el nombre real antes de enviar. Si no encuentra a nadie, te
+sugiere el más cercano ("¿Quisiste decir Yun Cook?"). Si hay varios chats igual de parecidos
+("Ana López" y "Ana Sofía"), pregunta cuál. **Seguridad:** antes de
 escribir verifica que la caja sea la del chat correcto ("Type a message to <nombre>"); si algo no
 cuadra, no escribe nada. Verifica que el texto quedó bien escrito antes de enviarlo y que la caja
 se vació después. Desde el teléfono no se puede enviar (pide confirmación). Abrir un chat lo marca

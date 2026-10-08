@@ -2547,3 +2547,40 @@ class WhatsAppEscribirYLlamar(unittest.TestCase):
             self.assertTrue(genesis._remota_actual["bloqueada"])
         finally:
             genesis._remota_actual.update(orden=None, bloqueada=None)
+
+
+class NombresQueSuenanIgual(unittest.TestCase):
+    """Whisper escribió "jumcook" por "Yun Cook" y WhatsApp no lo encontraba."""
+
+    def setUp(self):
+        import whatsapp_chat
+        self.W = whatsapp_chat
+        self._agenda = whatsapp_chat.AGENDA
+        whatsapp_chat.AGENDA = Path(tempfile.mkdtemp()) / "contactos.json"
+
+    def tearDown(self):
+        self.W.AGENDA = self._agenda
+
+    def test_por_sonido(self):
+        s = self.W.similitud
+        for dicho, real in (("jumcook", "Yun Cook"), ("llun cuk", "Yun Cook"), ("jerardo", "Gerardo Peña"),
+                            ("bictor", "Víctor"), ("jorge", "Yorge Ramírez"), ("mi mamá", "Mamá ❤️")):
+            self.assertGreaterEqual(s(dicho, real), 0.95, (dicho, real))
+        self.assertLess(s("Ana", "Mariana Ruiz"), 0.72)
+        self.assertLess(s("Luis", "Ana López"), 0.72)
+
+    def test_elige_al_mas_parecido_y_pregunta_si_empatan(self):
+        c = [(1, "Yun Cook", False), (2, "Yuri Cortés", False), (3, "Abraham Tc", True)]
+        self.assertEqual(self.W.elegir("jumcook", c), ("ok", c[0]))
+        estado, nombres = self.W.elegir("Ana", [(1, "Ana López", False), (2, "Ana Sofía", False)])
+        self.assertEqual(estado, "varios")
+        self.assertEqual(self.W.elegir("Yuri Cortez", [(1, "Yuri Cortés", False)])[0], "ok")
+        estado, sugerencia = self.W.elegir("Pedrito", [(1, "Pedro Infante", False)])
+        self.assertEqual(estado, "ok" if self.W.similitud("Pedrito", "Pedro Infante") >= 0.72 else "ninguno")
+
+    def test_rescate_y_agenda(self):
+        self.assertEqual(self.W.consultas_de_rescate("jumcook")[:2], ["cook", "jumc"])
+        self.W.recordar_nombres(["Yun Cook", "Mamá ❤️", "Yun Cook", "un chat"])
+        self.assertEqual(self.W._agenda(), ["Yun Cook", "Mamá ❤️"])
+        self.assertEqual(self.W.mas_parecido("jumcook", self.W._agenda())[0], "Yun Cook")
+        self.assertIsNone(self.W.mas_parecido("Pedro", self.W._agenda()))

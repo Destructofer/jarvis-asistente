@@ -19,9 +19,11 @@ TEXTO de los mensajes por accesibilidad (sí quién lo mandó: los tuyos traen "
 así que el contexto se lee de una captura de la conversación con el modelo de visión LOCAL
 (no sale de tu PC).
 """
+import json
 import re
 import time
 import unicodedata
+from pathlib import Path
 
 from skills import Fallo, skill
 
@@ -55,6 +57,95 @@ def parecido(buscado, nombre):
     return aciertos / len(b) * (0.95 if aciertos == len(b) else 0.8)
 
 
+# ---------- Nombres que suenan igual ----------
+# Whisper escribe los nombres como suenan: "Yun Cook" llegó como "jumcook" y la búsqueda de
+# WhatsApp (letra por letra) no lo encontraba. Se comparan por SONIDO en español.
+_VACIAS = {"mi", "a", "al", "la", "el", "con", "de", "del", "los", "las"}
+_FONEMAS = [
+    (r"ll", "y"), (r"ch", "x"), (r"sh", "x"), (r"ph", "f"), (r"qu", "k"), (r"g(?=[ei])", "y"),
+    (r"c(?=[ei])", "s"), (r"z", "s"), (r"c", "k"), (r"q", "k"), (r"h", ""), (r"j", "y"),
+    (r"v", "b"), (r"w", "u"), (r"oo", "u"), (r"ee", "i"), (r"ñ", "n"), (r"x(?=[aeiou])", "x"),
+    (r"m(?![aeiou])", "n"), (r"y(?![aeiou])", "i"),
+]
+
+
+def fonetica(texto):
+    """Clave de cómo SUENA un nombre: 'Yun Cook' y 'jumcook' -> 'yunkuk'."""
+    t = "".join(w for w in _norm(texto) if w not in _VACIAS)
+    t = re.sub(r"[^a-zñ]", "", t)
+    for patron, reemplazo in _FONEMAS:
+        t = re.sub(patron, reemplazo, t)
+    return re.sub(r"(.)\1+", r"\1", t)
+
+
+def similitud(buscado, nombre):
+    """0-1, combinando palabras ('mi mamá' ~ 'Mamá') y sonido ('jumcook' ~ 'Yun Cook'). Contra
+    cada tramo de 1 a 3 palabras del nombre: 'Ana' ~ 'Ana López Ruiz' cuenta como 1.0."""
+    from difflib import SequenceMatcher
+    mejor = parecido(buscado, nombre)
+    kb = fonetica(buscado)
+    palabras = _norm(nombre)
+    if len(kb) < 2 or not palabras:
+        return mejor
+    for i in range(len(palabras)):
+        for j in range(i + 1, min(len(palabras), i + 3) + 1):
+            kn = fonetica(" ".join(palabras[i:j]))
+            if len(kn) >= 2:
+                r = SequenceMatcher(None, kb, kn).ratio() - (0.02 * i)   # empezar por el nombre pesa más
+                mejor = max(mejor, r)
+    return round(mejor, 3)
+
+
+AGENDA = Path(__file__).resolve().parent / "datos" / "whatsapp_contactos.json"
+
+
+def _agenda():
+    try:
+        return json.loads(AGENDA.read_text(encoding="utf-8")).get("nombres", [])
+    except (OSError, ValueError):
+        return []
+
+
+def recordar_nombres(nombres):
+    """Guarda (solo en tu PC) los nombres de chats y contactos que se ven en WhatsApp: así un
+    nombre mal entendido se resuelve aunque la búsqueda de WhatsApp no lo encuentre."""
+    nuevos = [n.strip() for n in nombres if n and 2 <= len(n.strip()) <= 60 and n.strip() != "un chat"]
+    if not nuevos:
+        return
+    actuales = _agenda()
+    juntos = list(dict.fromkeys(actuales + nuevos))
+    if len(juntos) != len(actuales):
+        try:
+            AGENDA.parent.mkdir(parents=True, exist_ok=True)
+            AGENDA.write_text(json.dumps({"nombres": juntos[-2000:]}, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def mas_parecido(buscado, nombres, minimo=0.8, margen=0.06):
+    """(nombre, puntaje) si uno se parece claramente más que los demás; si no, None."""
+    puntuados = sorted(((similitud(buscado, n), n) for n in dict.fromkeys(nombres)), reverse=True)
+    if not puntuados or puntuados[0][0] < minimo:
+        return None
+    if len(puntuados) > 1 and puntuados[1][0] >= puntuados[0][0] - margen and puntuados[1][0] >= minimo:
+        return None   # dos casi iguales: que decida elegir() o pregunte
+    return puntuados[0][1], puntuados[0][0]
+
+
+def consultas_de_rescate(buscado, maximo=6):
+    """Pedazos del nombre para buscar en WhatsApp cuando el nombre completo no aparece
+    ('jumcook' -> 'cook', 'jumc', 'umco'...): WhatsApp solo encuentra letras exactas."""
+    palabras = [w for w in _norm(buscado) if w not in _VACIAS]
+    junto = "".join(palabras)
+    salida = [w for w in palabras if len(w) >= 3 and w != junto]
+    if len(junto) >= 4:
+        cuatro = [junto[i:i + 4] for i in range(len(junto) - 3)]
+        salida += [cuatro[-1], cuatro[0]] + cuatro[1:-1]
+    if len(junto) >= 3:
+        salida += [junto[-3:], junto[:3]]
+    return list(dict.fromkeys(q for q in salida if q != " ".join(palabras)))[:maximo]
+
+
 def nombre_de_fila(nombre_fila):
     """El nombre del chat en una fila de resultados ('Ana López 4:20 PM Hola' -> 'Ana López')."""
     import whatsapp
@@ -83,22 +174,26 @@ def candidatos(filas):
     return salida
 
 
-def elegir(buscado, cands):
-    """('ok', candidato) | ('varios', [nombres]) | ('ninguno', None)."""
-    if re.fullmatch(r"\s*(yo|a mi mismo|a mi misma|mi chat|mi numero|conmigo)\s*", " ".join(_norm(buscado))):
+def es_propio(buscado):
+    return bool(re.fullmatch(r"\s*(yo|a mi mismo|a mi misma|mi chat|mi numero|conmigo)\s*", " ".join(_norm(buscado))))
+
+
+def elegir(buscado, cands, minimo=0.72, margen=0.05):
+    """('ok', candidato) | ('varios', [nombres]) | ('ninguno', sugerencia o None).
+    Gana el que más se parece (por palabras o por sonido); si otro distinto queda casi igual,
+    pregunta cuál."""
+    if es_propio(buscado):
         propios = [c for c in cands if c[2]]
         return ("ok", propios[0]) if propios else ("ninguno", None)
-    puntuados = sorted(((parecido(buscado, c[1]), c) for c in cands), key=lambda x: -x[0])
-    buenos = [(p, c) for p, c in puntuados if p >= 0.75]
-    if not buenos:
-        return "ninguno", None
-    exactos = [c for p, c in buenos if p >= 0.999]
-    if len(exactos) == 1:
-        return "ok", exactos[0]
-    distintos = list(dict.fromkeys(c[1] for p, c in buenos))
-    if len(distintos) == 1:
-        return "ok", buenos[0][1]
-    return "varios", distintos[:5]
+    puntuados = sorted(((similitud(buscado, c[1]), c) for c in cands), key=lambda x: -x[0])
+    if not puntuados or puntuados[0][0] < minimo:
+        sugerencia = puntuados[0][1][1] if puntuados and puntuados[0][0] >= 0.5 else None
+        return "ninguno", sugerencia
+    mejor, cand = puntuados[0]
+    rivales = list(dict.fromkeys(c[1] for p, c in puntuados if p >= max(minimo, mejor - margen)))
+    if len(rivales) > 1:
+        return "varios", rivales[:5]
+    return "ok", cand
 
 
 # ---------- La app ----------
@@ -252,35 +347,48 @@ def _teclas(secuencia):
     send_keys(secuencia)
 
 
-def abrir_chat(buscado):
-    """Abre el chat. Devuelve (estado, dato): ('ok', nombre_real) | ('varios', [nombres]) |
-    ('ninguno', None). Al terminar, la caja del mensaje es la de ese chat (verificado)."""
+def _buscar(h, w, consulta):
+    """Escribe la consulta en el buscador de WhatsApp y devuelve las filas de resultados
+    [(nombre, elemento)] cuando terminan de cargar ([] si no hay ninguno)."""
     import realidad
     import whatsapp
-    h, w = _ventana_uia()
-    _al_frente(h)
     busq = _buscador_de_chats(w)
     if busq is None:
         raise RuntimeError("No encontré el buscador de WhatsApp.")
     busq.click_input()
-    time.sleep(0.2)
+    time.sleep(0.15)
     _teclas("^a{BACKSPACE}")
-    realidad._escribir(buscado if not re.fullmatch(r"(yo|a mi mismo|a mi misma|conmigo)", " ".join(_norm(buscado))) else "You")
+    realidad._escribir(consulta)
     buscar = whatsapp._buscador()
-    filas, fin, anterior = [], time.time() + 6, None
-    while time.time() < fin:
+    inicio, anterior, vacias = time.time(), None, 0
+    while time.time() - inicio < 6:
         time.sleep(0.3)
         tabla = buscar(h, "DataGrid", ["Search results.", "Resultados de la búsqueda."])
         if tabla is None:
+            if time.time() - inicio > 3:   # sin tabla: no hubo resultados
+                return []
             continue
-        hijos = _filas(tabla)
-        nombres = [n for n, _ in hijos]
-        if nombres and nombres == anterior:   # dos lecturas iguales: ya terminó de cargar
-            filas = hijos
-            break
+        filas = _filas(tabla)
+        nombres = [n for n, _ in filas]
+        if not nombres:
+            vacias += 1
+            if vacias >= 3:
+                return []
+            continue
+        if nombres == anterior:   # dos lecturas iguales: ya terminó de cargar
+            recordar_nombres([c[1] for c in candidatos(nombres)])
+            return filas
         anterior = nombres
-    cands = candidatos([n for n, _ in filas])
-    estado, dato = elegir(buscado, cands)
+    return []
+
+
+def abrir_chat(buscado):
+    """Abre el chat del nombre más parecido (también por sonido: 'jumcook' -> 'Yun Cook').
+    Devuelve (estado, dato): ('ok', nombre_real) | ('varios', [nombres]) | ('ninguno',
+    sugerencia o None). Al terminar, la caja del mensaje es la de ese chat (verificado)."""
+    h, w = _ventana_uia()
+    _al_frente(h)
+    estado, dato, filas = resolver(h, w, buscado)
     if estado != "ok":
         _teclas("{ESC}")
         return estado, dato
@@ -293,6 +401,32 @@ def abrir_chat(buscado):
         if caja is not None and parecido(nombre, destinatario(caja)) >= 0.75:
             return "ok", destinatario(caja)
     raise RuntimeError(f"Abrí la búsqueda pero no pude confirmar que el chat abierto sea el de {nombre}.")
+
+
+def resolver(h, w, buscado):
+    """Encuentra la fila del chat sin abrirlo: (estado, dato, filas)."""
+    propio = es_propio(buscado)
+    consulta = "You" if propio else buscado
+    if not propio:   # 1. los nombres que ya conoce: se busca con el nombre real
+        conocido = mas_parecido(buscado, _agenda())
+        if conocido:
+            consulta = conocido[0]
+    filas = _buscar(h, w, consulta)
+    estado, dato = elegir(buscado, candidatos([n for n, _ in filas]))
+    if estado == "ninguno" and not propio:
+        # 2. WhatsApp busca letras exactas: se prueba con pedazos y se compara por sonido
+        vistos = {}
+        for q in consultas_de_rescate(buscado):
+            for c in candidatos([n for n, _ in _buscar(h, w, q)]):
+                vistos.setdefault(c[1], c)
+            estado, dato = elegir(buscado, list(vistos.values()))
+            if estado != "ninguno":
+                break
+        if estado == "ok":   # se vuelve a buscar con el nombre real para tener su fila
+            nombre_real = dato[1]
+            filas = _buscar(h, w, nombre_real)
+            estado, dato = elegir(nombre_real, candidatos([n for n, _ in filas]))
+    return estado, dato, filas
 
 
 def enviar(nombre, texto):
@@ -453,7 +587,8 @@ def whatsapp_mensaje(contacto, que_decir, tono="profesional", tal_cual=False):
     if estado == "varios":
         return Fallo(f"Encontré varios chats parecidos a «{contacto}»: {', '.join(dato)}. ¿A cuál?")
     if estado == "ninguno":
-        return Fallo(f"No encontré a «{contacto}» en tus chats ni contactos de WhatsApp.")
+        return Fallo(f"No encontré a «{contacto}» en tus chats ni contactos de WhatsApp."
+                     + (f" ¿Quisiste decir {dato}?" if dato else ""))
     chat = dato
     contexto = "" if tal_cual else leer_conversacion()
     try:
@@ -511,7 +646,7 @@ def whatsapp_llamar(contacto, video=False):
     if estado == "varios":
         return Fallo(f"Encontré varios parecidos a «{contacto}»: {', '.join(dato)}. ¿A cuál?")
     if estado == "ninguno":
-        return Fallo(f"No encontré a «{contacto}» en WhatsApp.")
+        return Fallo(f"No encontré a «{contacto}» en WhatsApp." + (f" ¿Quisiste decir {dato}?" if dato else ""))
     tipo = "una videollamada" if video else "una llamada"
     if not _confirmar(f"¿Le hago {tipo} de WhatsApp a {dato}?"):
         return "No marqué."
@@ -532,8 +667,10 @@ def whatsapp_leer_chat(contacto):
         estado, dato = abrir_chat(contacto)
     except Exception as e:
         return Fallo(f"No pude abrir WhatsApp: {e}")
+    if estado == "varios":
+        return Fallo(f"Encontré varios chats parecidos a «{contacto}»: {', '.join(dato)}. ¿Cuál?")
     if estado != "ok":
-        return Fallo(f"No encontré un solo chat de «{contacto}»" + (f" (hay: {', '.join(dato)})" if dato else "") + ".")
+        return Fallo(f"No encontré el chat de «{contacto}»." + (f" ¿Quisiste decir {dato}?" if dato else ""))
     texto = leer_conversacion(12)
     if not texto:
         return Fallo("Abrí el chat pero no pude leerlo.")
