@@ -2311,3 +2311,276 @@ class DetectorParaMi(unittest.TestCase):
         self.assertTrue(self.P.llamado("Jarvis, pon el video de cocina"))
         self.assertEqual(self.P.correcciones(), ["pon el video de cocina"])
         self.assertFalse(self.P.llamado("Jarvis, qué hora es"))
+
+
+class VisionConLimites(unittest.TestCase):
+    """vision.py: una nube que llegó a su límite queda en pausa; lo de fondo va al modelo local."""
+
+    def setUp(self):
+        import vision
+        self.V = vision
+        self._orig = (vision._nube_varias, vision._local_varias, vision._proveedores, vision._usar_nube)
+        self.llamadas = []
+        vision._proveedores = lambda conf: [{"modelo": "nube-a", "url": "x"}, {"modelo": "nube-b", "url": "y"}]
+        vision._usar_nube = lambda conf: bool(vision.libres(conf))
+        vision._local_varias = lambda conf, s, i, l: self.llamadas.append("local") or "visto en local"
+        cerebro._saturado.clear()
+
+    def tearDown(self):
+        self.V._nube_varias, self.V._local_varias, self.V._proveedores, self.V._usar_nube = self._orig
+        cerebro._saturado.clear()
+
+    def test_el_limite_pone_en_pausa(self):
+        def nube(conf, n, s, i, l):
+            self.llamadas.append(n["modelo"])
+            if n["modelo"] == "nube-a":
+                raise RuntimeError("Error code: 429 - Rate limit reached. Please try again in 1m30s")
+            return "visto en b"
+        self.V._nube_varias = nube
+        self.assertEqual(self.V._ver({}, "s", "i", ["b64"]), "visto en b")
+        self.assertGreater(cerebro._saturado["nube-a"] - time.time(), 80)    # pausa de 1m30s
+        self.llamadas.clear()
+        self.assertEqual(self.V._ver({}, "s", "i", ["b64"]), "visto en b")
+        self.assertEqual(self.llamadas, ["nube-b"])                          # ni lo intenta con la "a"
+
+    def test_todas_en_pausa_va_directo_al_local(self):
+        self.V._nube_varias = lambda *a: self.fail("no debía llamar a la nube")
+        cerebro._saturado.update({"nube-a": time.time() + 60, "nube-b": time.time() + 60})
+        self.assertEqual(self.V._ver({}, "s", "i", ["b64"]), "visto en local")
+
+    def test_lo_de_fondo_no_gasta_la_nube(self):
+        self.V._nube_varias = lambda *a: self.fail("lo de fondo no debía usar la nube")
+        self.assertEqual(self.V._ver({}, "s", "i", ["b64"], fondo=True), "visto en local")
+
+
+class WhisperSinMemoria(unittest.TestCase):
+    """Sin RAM, Whisper tumbaba a Jarvis completo (mkl_malloc: failed to allocate memory)."""
+
+    def setUp(self):
+        self._orig = (escuchar._cargar_modelo, escuchar._transcribir_nube, escuchar.liberar_memoria,
+                      escuchar._avisar_memoria, escuchar._gpu["ok"], escuchar._cfg)
+        self.liberadas = []
+        escuchar.liberar_memoria = lambda: self.liberadas.append(1)
+        escuchar._avisar_memoria = lambda: None
+        escuchar._gpu["ok"] = False
+        escuchar._cfg = lambda: {"stt": {"modo": "auto"}}
+
+    def tearDown(self):
+        (escuchar._cargar_modelo, escuchar._transcribir_nube, escuchar.liberar_memoria,
+         escuchar._avisar_memoria, escuchar._gpu["ok"], escuchar._cfg) = self._orig
+
+    def _sin_ram(self, nombre):
+        raise RuntimeError("mkl_malloc: failed to allocate memory")
+
+    def test_no_tumba_a_jarvis_y_rescata_con_la_nube(self):
+        escuchar._cargar_modelo = self._sin_ram
+        nube = iter([None, "abre spotify"])   # la 1a vez (nube=True) no contesta; la de rescate sí
+        escuchar._transcribir_nube = lambda audio, prompt: next(nube)
+        audio = np.zeros(16000, dtype=np.float32)
+        self.assertEqual(escuchar.transcribir(audio, nube=True), "abre spotify")
+        self.assertEqual(len(self.liberadas), 2)          # liberó memoria en cada intento
+        escuchar._transcribir_nube = lambda audio, prompt: None
+        self.assertEqual(escuchar.transcribir(audio, nube=True), "")   # sin nube: "no te escuché"
+
+    def test_otros_errores_no_se_esconden(self):
+        def roto(nombre):
+            raise ValueError("otra cosa")
+        escuchar._cargar_modelo = roto
+        with self.assertRaises(ValueError):
+            escuchar._transcribir_local(np.zeros(10, dtype=np.float32), "small", None)
+
+    def test_reconoce_falta_de_memoria(self):
+        self.assertTrue(escuchar.es_falta_de_memoria(MemoryError()))
+        self.assertTrue(escuchar.es_falta_de_memoria(RuntimeError("CUDA failed: out of memory")))
+        self.assertFalse(escuchar.es_falta_de_memoria(RuntimeError("cublas64_12.dll not found")))
+
+
+class AprendeSoloDeTi(unittest.TestCase):
+    """Guardaba "Se llama Jarvis" y "Su nombre es Abraham Jarvis" de una canción y un video."""
+
+    def setUp(self):
+        import para_mi
+        self.P = para_mi
+        self._orig = (para_mi.probabilidad, escuchar.frase_de_la_pc)
+        escuchar.frase_de_la_pc = lambda minimo=0.5: False
+
+    def tearDown(self):
+        self.P.probabilidad, escuchar.frase_de_la_pc = self._orig
+
+    def test_de_quien_aprende(self):
+        self.P.probabilidad = lambda t: 0.3
+        self.assertTrue(genesis._es_de_fiar("me gusta el rock", seguimiento=False))    # lo llamaste
+        self.assertFalse(genesis._es_de_fiar("amiguitos, mi nombre es...", seguimiento=True))
+        self.P.probabilidad = lambda t: 0.95
+        self.assertTrue(genesis._es_de_fiar("estudio ingeniería en sistemas", seguimiento=True))
+        escuchar.frase_de_la_pc = lambda minimo=0.5: True                            # sonaba la PC
+        self.assertFalse(genesis._es_de_fiar("estudio ingeniería en sistemas", seguimiento=True))
+
+    def test_no_guarda_hechos_sobre_jarvis(self):
+        import cognicion
+        import memoria
+        guardados = []
+        orig = (memoria.listar_hechos, memoria.agregar_hecho)
+        memoria.listar_hechos = lambda: []
+        memoria.agregar_hecho = guardados.append
+        try:
+            cognicion._guardar(["Se llama Jarvis", "Su nombre es Abraham Jarvis", "Le gusta el rock"])
+        finally:
+            memoria.listar_hechos, memoria.agregar_hecho = orig
+        self.assertEqual(guardados, ["Le gusta el rock"])
+
+
+class ControlDesdeElTelefono(unittest.TestCase):
+    """remoto.py + genesis: órdenes desde el teléfono por Supabase."""
+
+    def setUp(self):
+        import nube
+        import remoto
+        self.R, self.N = remoto, nube
+        self.ordenes = [{"id": 7, "texto": "¿qué hora es?", "creado": "x"}]
+        self.respuestas, self.tomadas = [], []
+
+        class Resp:
+            def __init__(s, datos):
+                s._d = datos
+
+            def json(s):
+                return s._d
+
+        def peticion(metodo, ruta, json=None, encabezados=None, **kw):
+            if ruta.startswith("/rest/v1/telefonos"):
+                return Resp([{"id": 1}])
+            if metodo == "GET" and "estado=eq.pendiente" in ruta:
+                return Resp(self.ordenes)
+            if metodo == "PATCH" and "estado=eq.pendiente" in ruta:
+                self.tomadas.append(ruta)
+                return Resp([{"id": 7}] if len(self.tomadas) == 1 else [])
+            if metodo == "PATCH":
+                self.respuestas.append(json)
+            return Resp([])
+        self._orig = (nube.peticion, remoto.entregar, dict(remoto._estado))
+        nube.peticion = peticion
+        remoto._estado.update(telefonos=None, t_latido=0.0, t_limpieza=0.0, procesando=set())
+
+    def tearDown(self):
+        self.N.peticion, self.R.entregar = self._orig[0], self._orig[1]
+        self.R._estado.clear()
+        self.R._estado.update(self._orig[2])
+
+    def test_la_llave_va_despues_del_gato(self):
+        d = self.R.direccion("LLAVE/+x", url="https://abc.supabase.co", publica="sb_publishable_1",
+                             pagina="https://p.io/c/")
+        pagina, fragmento = d.split("#", 1)
+        self.assertEqual(pagina, "https://p.io/c/")             # al servidor solo llega esto
+        self.assertIn("t=LLAVE%2F%2Bx", fragmento)
+        self.assertEqual(len(self.R.huella("x")), 64)
+
+    def test_toma_cada_orden_una_sola_vez(self):
+        entregadas = []
+        self.R.entregar = entregadas.append
+        self.assertEqual(self.R.revisar_una_vez(), 1)
+        self.assertEqual(self.R.revisar_una_vez(), 0)          # ya está en proceso
+        self.R._estado["procesando"].clear()
+        self.assertEqual(self.R.revisar_una_vez(), 0)          # Supabase dice que ya no está pendiente
+        self.assertEqual([o["id"] for o in entregadas], [7])
+
+    def test_genesis_responde_al_telefono_y_no_hace_lo_peligroso(self):
+        orig = genesis._procesar
+        try:
+            def procesar(cfg, history, user, escrito, interruptor, **kw):
+                self.assertFalse(cfg["voz_activa"])               # no habla en la PC
+                genesis._entregar(cfg, type("T", (), {"decir": lambda s, t: None})(), "Son las 5.", [])
+            genesis._procesar = procesar
+            genesis._atender_remota({"voz_activa": True}, [], {"id": 7, "texto": "¿qué hora es?"}, None)
+            self.assertEqual(self.respuestas[-1]["respuesta"], "Son las 5.")
+            self.assertEqual(self.respuestas[-1]["estado"], "hecha")
+
+            def procesar_peligroso(cfg, history, user, escrito, interruptor, **kw):
+                r = genesis.ejecutar_herramienta(cfg, "apagar_equipo", {})
+                self.assertIsInstance(r, skills.Fallo)
+                genesis._entregar(cfg, type("T", (), {"decir": lambda s, t: None})(), "Falta de permisos.", [])
+            genesis._procesar = procesar_peligroso
+            genesis._atender_remota({}, [], {"id": 8, "texto": "apaga la compu"}, None)
+            self.assertIn("Por seguridad no lo hice", self.respuestas[-1]["respuesta"])
+        finally:
+            genesis._procesar = orig
+        self.assertIsNone(genesis._remota_actual["orden"])
+
+
+class WhatsAppEscribirYLlamar(unittest.TestCase):
+    """whatsapp_chat.py: elegir bien el chat antes de escribir nada."""
+
+    def setUp(self):
+        import whatsapp_chat
+        self.W = whatsapp_chat
+
+    def test_parecido_de_nombres(self):
+        p = self.W.parecido
+        self.assertEqual(p("Ana López", "Ana López"), 1.0)
+        self.assertGreaterEqual(p("mi mamá", "Mamá ❤️"), 0.75)
+        self.assertGreaterEqual(p("ana", "Ana López"), 0.75)
+        self.assertLess(p("Ana", "Mariana Ruiz"), 0.75)
+        self.assertLess(p("Luis", "Ana López"), 0.75)
+
+    def test_resultados_por_secciones(self):
+        filas = ["Chats", "Ana López 4:20 PM Nos vemos mañana", "Abraham Tc (You) Message yourself",
+                 "Contacts", "Ana Sofía Hey there! I am using WhatsApp.", "Messages",
+                 "Ana López 9/24/2026 ana me debe 200"]
+        c = self.W.candidatos(filas)
+        self.assertEqual([x[1] for x in c], ["Ana López", "Abraham Tc", "Ana Sofía Hey there!"])
+        self.assertTrue(c[1][2])                                          # el chat propio
+        self.assertEqual(self.W.elegir("Ana López", c), ("ok", c[0]))
+        estado, nombres = self.W.elegir("Ana", c)
+        self.assertEqual(estado, "varios")                                # Ana López y Ana Sofía: pregunta
+        self.assertEqual(self.W.elegir("yo", c), ("ok", c[1]))
+        self.assertEqual(self.W.elegir("Pedro", c), ("ninguno", None))
+
+    def test_caja_del_mensaje(self):
+        caja = type("C", (), {"element_info": type("I", (), {"name": "Type a message to Ana López"})()})()
+        self.assertEqual(self.W.destinatario(caja), "Ana López")
+        self.assertEqual(self.W.destinatario(None), "")
+
+    def test_desde_el_telefono_no_se_confirma(self):
+        genesis._remota_actual.update(orden={"id": 1}, bloqueada=None)
+        try:
+            self.assertFalse(genesis.confirmar({}, "¿Le mando a Ana: hola?"))
+            self.assertTrue(genesis._remota_actual["bloqueada"])
+        finally:
+            genesis._remota_actual.update(orden=None, bloqueada=None)
+
+
+class NombresQueSuenanIgual(unittest.TestCase):
+    """Whisper escribió "jumcook" por "Yun Cook" y WhatsApp no lo encontraba."""
+
+    def setUp(self):
+        import whatsapp_chat
+        self.W = whatsapp_chat
+        self._agenda = whatsapp_chat.AGENDA
+        whatsapp_chat.AGENDA = Path(tempfile.mkdtemp()) / "contactos.json"
+
+    def tearDown(self):
+        self.W.AGENDA = self._agenda
+
+    def test_por_sonido(self):
+        s = self.W.similitud
+        for dicho, real in (("jumcook", "Yun Cook"), ("llun cuk", "Yun Cook"), ("jerardo", "Gerardo Peña"),
+                            ("bictor", "Víctor"), ("jorge", "Yorge Ramírez"), ("mi mamá", "Mamá ❤️")):
+            self.assertGreaterEqual(s(dicho, real), 0.95, (dicho, real))
+        self.assertLess(s("Ana", "Mariana Ruiz"), 0.72)
+        self.assertLess(s("Luis", "Ana López"), 0.72)
+
+    def test_elige_al_mas_parecido_y_pregunta_si_empatan(self):
+        c = [(1, "Yun Cook", False), (2, "Yuri Cortés", False), (3, "Abraham Tc", True)]
+        self.assertEqual(self.W.elegir("jumcook", c), ("ok", c[0]))
+        estado, nombres = self.W.elegir("Ana", [(1, "Ana López", False), (2, "Ana Sofía", False)])
+        self.assertEqual(estado, "varios")
+        self.assertEqual(self.W.elegir("Yuri Cortez", [(1, "Yuri Cortés", False)])[0], "ok")
+        estado, sugerencia = self.W.elegir("Pedrito", [(1, "Pedro Infante", False)])
+        self.assertEqual(estado, "ok" if self.W.similitud("Pedrito", "Pedro Infante") >= 0.72 else "ninguno")
+
+    def test_rescate_y_agenda(self):
+        self.assertEqual(self.W.consultas_de_rescate("jumcook")[:2], ["cook", "jumc"])
+        self.W.recordar_nombres(["Yun Cook", "Mamá ❤️", "Yun Cook", "un chat"])
+        self.assertEqual(self.W._agenda(), ["Yun Cook", "Mamá ❤️"])
+        self.assertEqual(self.W.mas_parecido("jumcook", self.W._agenda())[0], "Yun Cook")
+        self.assertIsNone(self.W.mas_parecido("Pedro", self.W._agenda()))

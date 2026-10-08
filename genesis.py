@@ -26,6 +26,8 @@ import graph  # noqa: F401  (registra las skills de lectura de archivos de Teams
 import bitacora  # lo que Jarvis de verdad hizo (para no afirmar lo que no hizo)
 import juegos  # Jarvis aprieta botones de verdad en el juego (control virtual de Xbox o teclado)
 import para_mi  # red neuronal local: ¿lo que se dijo sin llamarlo era para Jarvis?
+import remoto  # órdenes desde tu teléfono, por Supabase
+import whatsapp_chat  # escribirle y llamarle a tus contactos de WhatsApp (siempre con tu confirmación)
 import habitos  # aprende tus rutinas (música al trabajar, apps a cierta hora) y te las ofrece
 import ciclo  # el día y la noche: resumen de la mañana y avisos de noche
 import clima  # noqa: F401  (registra la skill del clima)
@@ -148,6 +150,19 @@ def _no_es_para_mi(cfg, texto):
     if not cerebro.nube_disponible(cfg) and veredicto != "si":
         return "Sin la nube no adivino si era para mí (el modelo local contesta todo)"
     return ""
+
+
+def _es_de_fiar(texto, seguimiento):
+    """¿Aprender hechos sobre ti de esta frase? Solo si de verdad la dijiste TÚ: llamándolo por
+    su nombre, o sin nombre si la red "¿era para mí?" está muy segura y no sonaba audio de la
+    computadora. Antes aprendía de lo que captaba de videos y canciones ("Se llama Jarvis",
+    "Su nombre es Abraham Jarvis"). Frente al público, nunca de lo dicho sin nombre."""
+    if not seguimiento:
+        return True
+    if expositor.ACTIVO or escuchar.frase_de_la_pc(minimo=0.2):
+        return False
+    p = para_mi.probabilidad(texto)
+    return p is not None and p >= 0.9
 
 
 def clasificar_seguimiento(texto):
@@ -393,6 +408,8 @@ GRUPOS = [
     (r"jugando|juegas|jugaste|fuiste tu|tomaste el control|que hiciste|moviste|tecleaste|controlando",
      ["que_hice"]),
     (r"detector|reentrena|entrena|cuando te hablo|aprende cuando", ["entrenar_detector"]),
+    (r"telefono|celular|movil|cel\b|desde fuera|control remoto",
+     ["conectar_telefono", "desconectar_telefonos", "estado_telefono"]),
     (r"combo|fatality|brutality|especial|golpe|patada|juego|pelea|mortal|kombat|lado (izquierdo|derecho)|del lado",
      ["combo_juego", "guardar_combo", "listar_combos", "lado_jugador", "buscar_web"]),
     (r"clima|tiempo|llover|lluvia|temperatura|pronostico|calor|frio|grados|paraguas|soleado",
@@ -400,8 +417,12 @@ GRUPOS = [
     (r"correo|gmail|mail|email|banco|bbva|banorte|santander|occ|computrabajo|vacante|hospital|"
      r"gbm|inversion|me escribio|me llego",
      ["correos_importantes", "conectar_gmail"]),
-    (r"whats|wasap|guasap|mensaje|me escribio|chat|contestar|responder",
-     ["whatsapp_pendientes"]),
+    (r"whats|wasap|guasap|mensaje|me escribio|chat|contestar|responder|contestale|dile a|dile que|"
+     r"mandale|escribele|avisale|llama a|llamale|marcale|llamada|videollamada",
+     ["whatsapp_pendientes", "whatsapp_mensaje", "whatsapp_llamar", "whatsapp_leer_chat"]),
+    (r"mas corto|mas largo|mas formal|mas amable|cambialo|cambiale|agregale|quitale|mandalo asi|tal cual|"
+     r"asi esta bien|corrigelo",
+     ["whatsapp_corregir"]),
     (r"pendiente|me quedo|me falta|tengo que|manana tengo|anota|ya termine|tacha|resumen|ponme al dia|"
      r"como viene el dia|buenos dias",
      ["anotar_pendiente", "ver_pendientes", "completar_pendiente", "resumen_del_dia"]),
@@ -1037,6 +1058,8 @@ def _despues_de_palabra(texto, palabras):
 # ---------- Modo conversación ----------
 _conversacion = {"hasta": 0.0}
 _entrada = {"seguimiento": False}   # la última orden llegó sin decir "Jarvis"
+_remotas = queue.Queue()             # órdenes que llegaron del teléfono (remoto.py)
+_remota_actual = {"orden": None, "textos": [], "bloqueada": None}   # la que se atiende: aquí cae la respuesta
 
 
 def _segundos_conversacion(cfg):
@@ -1072,7 +1095,8 @@ def _escuchar_seguimiento(cfg):
             return "", False
         hud.estado("escuchando")  # el reactor encendido es la señal de que sigue atento
         try:
-            audio = escuchar.grabar(umbral=cfg.get("mic_umbral", 0.004), espera_seg=resta)
+            audio = escuchar.grabar(umbral=cfg.get("mic_umbral", 0.004), espera_seg=resta,
+                                    atento_a_conversar=True)
         except Exception as e:
             print(f"[El micrófono dio un error en la conversación: {str(e)[:80]}]")
             return "", False
@@ -1100,6 +1124,14 @@ def obtener_entrada(cfg):
     el modo conversación (sin decir "Jarvis"), _entrada["seguimiento"] queda en True."""
     umbral = cfg.get("mic_umbral", 0.004)
     _entrada["seguimiento"] = False
+
+    # Una orden desde el teléfono (remoto.py despertó la espera con escuchar.CONVERSAR)
+    try:
+        orden = _remotas.get_nowait()
+        _entrada["remota"] = orden
+        return orden["texto"], True
+    except queue.Empty:
+        pass
 
     # Una orden que llegó interrumpiendo a Jarvis mientras hablaba ("Hey Jarvis, ya, gracias")
     try:
@@ -1239,6 +1271,11 @@ def confirmar(cfg, pregunta):
     """Pide confirmación. Si la respuesta es no (o no hubo respuesta), queda anotado: el modelo
     no debe volver a pedir lo mismo en esta orden (antes repetía la misma pregunta hasta 8
     veces y cada una se tragaba lo siguiente que decías)."""
+    if _remota_actual["orden"] is not None:
+        # desde el teléfono no se confirma nada (enviar mensajes, apagar, borrar...)
+        _remota_actual["bloqueada"] = _remota_actual["bloqueada"] or "algo que pide confirmación"
+        _confirmacion["negada"] = True
+        return False
     ok = _preguntar(cfg, pregunta)
     if not ok:
         _confirmacion["negada"] = True
@@ -1315,6 +1352,10 @@ def ejecutar_herramienta(cfg, nombre, args):
     if not skills.disponible(nombre):
         return skills.Fallo("Esa función no está disponible ahora (faltan credenciales o conexión).")
     if skills.riesgo(nombre) == "confirmar":
+        if _remota_actual["orden"] is not None:
+            _remota_actual["bloqueada"] = nombre
+            return skills.Fallo("NO SE HIZO: por seguridad, desde el teléfono no hago nada que pida "
+                                "confirmación. Dile eso al usuario tal cual.")
         if not confirmar(cfg, skills.pregunta(nombre)):
             return skills.Fallo("El usuario canceló la acción. No se ejecutó nada.")
     print(f"[Skill] {nombre} {args}")
@@ -1524,6 +1565,11 @@ def _personalidad(cfg, en_exposicion):
 # herramientas van en la petición (elegir_herramientas): con el plan gratis de Groq cada
 # instrucción que va en TODAS las peticiones cuenta para el límite por minuto.
 GUIAS = {
+    "whatsapp_mensaje": "Para escribirle a alguien por WhatsApp usa whatsapp_mensaje con el contacto "
+                        "como lo nombró y en que_decir LO QUE QUIERE DECIR con sus palabras (no lo "
+                        "redactes tú: la herramienta lee el chat y lo redacta). Tal cual solo si lo "
+                        "pidió. Si luego pide cambiar el mensaje propuesto, usa whatsapp_corregir. "
+                        "Nunca digas que lo enviaste si la herramienta no lo confirma.",
     "analizar_documento": "Para resumir, analizar o sacar la idea general o los puntos clave de un "
                           "archivo (PDF, Word, Excel, PowerPoint, imagen, carpeta o zip) usa "
                           "analizar_documento; si pide ponerlo en un bloc de notas o Word, usa su "
@@ -1686,6 +1732,8 @@ def _entregar(cfg, turno, resultado, herramientas=None):
     if isinstance(resultado, skills.Fallo):
         categoria = "confundido"
     print(f"{_nombre(cfg)}: {texto} [ACCION: {categoria}]\n")
+    if _remota_actual["orden"] is not None:
+        _remota_actual["textos"].append(texto)   # va de regreso al teléfono
     # Hizo algo con una herramienta y salió bien: al terminar, el pulgar arriba
     hud.accion(categoria, completado=bool(usadas) and categoria != "confundido")
     if isinstance(resultado, (Callado, YaDicho)):
@@ -1845,6 +1893,30 @@ def _conectar_ojos(cfg):
     presencia.iniciar()
 
 
+def _atender_remota(cfg, history, orden, interruptor):
+    """Una orden del teléfono: se procesa como una escrita, sin voz en la PC (tal vez no estás
+    ahí; remoto.hablar_en_pc la activa) y la respuesta regresa al teléfono."""
+    print(f"Tú (desde el teléfono): {orden['texto']}")
+    cfg_remota = dict(cfg, voz_activa=bool((cfg.get("remoto") or {}).get("hablar_en_pc", False))
+                      and cfg.get("voz_activa", True))
+    _remota_actual.update(orden=orden, textos=[], bloqueada=None)
+    ok = True
+    try:
+        _procesar(cfg_remota, history, orden["texto"], True, interruptor)
+    except Exception as e:
+        ok = False
+        print(f"[Remoto: error con la orden del teléfono: {type(e).__name__}: {str(e)[:120]}]")
+        _remota_actual["textos"].append("Tuve un problema con eso; intenta de otra forma.")
+    finally:
+        textos = [t for t in _remota_actual["textos"] if t]
+        if _remota_actual["bloqueada"]:
+            textos = [f"Por seguridad no lo hice: desde el teléfono no hago nada que pida confirmación "
+                      f"({_remota_actual['bloqueada'].replace('_', ' ')}). Eso hazlo en la computadora."]
+        _remota_actual.update(orden=None, textos=[], bloqueada=None)
+        remoto.responder(orden["id"], " ".join(textos) or "Hecho.", ok)
+        hud.estado("inactivo")
+
+
 def _procesar(cfg, history, user, escrito, interruptor, seguimiento=False, al_publico=False):
     """Una orden completa: atajo o modelo, voz, y registro de tiempos.
     seguimiento=True: se dijo en el modo conversación, sin decir "Jarvis"; el modelo puede
@@ -1889,6 +1961,8 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
             reply = ejecutar_herramienta(cfg, atajo, {})
             categoria = acciones.deducir([atajo], str(reply))
             print(f"{_nombre(cfg)}: {reply} [ACCION: {categoria}]\n")
+            if _remota_actual["orden"] is not None:
+                _remota_actual["textos"].append(str(reply))
             hud.accion(categoria, completado=categoria != "confundido")
             turno.decir("Captura guardada." if atajo == "captura_pantalla"
                         and str(reply).startswith("Captura") else reply)
@@ -1968,7 +2042,7 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
             return
         memoria.guardar_mensaje("user", user)
         memoria.guardar_mensaje("assistant", acciones.separar(str(reply))[0])
-        if not seguimiento or not expositor.ACTIVO:  # frente al público, no aprende de otros
+        if _es_de_fiar(user, seguimiento):
             cognicion.aprender(cfg, user)
         _entregar(cfg, turno, reply)
     finally:
@@ -2017,6 +2091,13 @@ def main(persistente=False):
     correo.hablar = lambda texto: avisar(cfg, texto)
     nube.hablar = lambda texto: avisar(cfg, texto)
     para_mi.hablar = lambda texto: avisar(cfg, texto)
+    escuchar.AL_FALTAR_MEMORIA = lambda texto: avisar(cfg, texto)
+    remoto.hablar = lambda texto: avisar(cfg, texto)
+    whatsapp_chat.configurar(cfg)
+    whatsapp_chat.confirmar = lambda pregunta: confirmar(cfg, pregunta)
+    whatsapp_chat.hablar = lambda texto: avisar(cfg, texto)
+    remoto.entregar = lambda orden: (_remotas.put(orden), escuchar.CONVERSAR.set())
+    remoto.iniciar(cfg)
     semantica.iniciar()  # indexa tus conversaciones por significado (en segundo plano)
     respaldo.iniciar()   # un respaldo cifrado al día en Supabase (si está conectado)
     presencia.antes_de_saludar = ciclo.resumen_pendiente_hoy  # el resumen de la mañana ya saluda
@@ -2071,8 +2152,12 @@ def main(persistente=False):
     history = [{"role": "system", "content": _prompt(cfg)}]
     history += memoria.cargar_mensajes(cfg.get("memoria", {}).get("turnos_previos", 6))
 
+    try:
+        mensajes = memoria._q("SELECT COUNT(*) AS n FROM mensajes")[0]["n"]
+    except Exception:
+        mensajes = 0
     print(f"{_nombre(cfg)} listo (modo: {cfg.get('modo', 'auto')}, "
-          f"{len(memoria.listar_hechos())} recuerdos). [ACCION: saludo]\n")
+          f"{len(memoria.listar_hechos())} datos sobre ti, {mensajes} mensajes). [ACCION: saludo]\n")
     hud.accion("saludo", segundos=8)
     # La cámara de la PC (gestos y presencia) al final: si te saludara mientras calibra el
     # micrófono, su propia voz subiría el umbral y luego no te oiría bien
@@ -2085,6 +2170,11 @@ def main(persistente=False):
         except KeyboardInterrupt:
             print("\nHasta luego.")
             break
+
+        remota = _entrada.pop("remota", None)
+        if remota is not None:
+            _atender_remota(cfg, history, remota, interruptor)
+            continue
 
         if not user:
             print("No te escuché.\n")

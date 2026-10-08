@@ -164,11 +164,16 @@ def _extraer(cfg, texto):
     return [str(h).strip() for h in hechos if isinstance(h, str) and 6 <= len(h.strip()) <= 160][:3]
 
 
+# Un "hecho sobre ti" que habla de Jarvis viene de otro lado: así se guardaron "Se llama
+# Jarvis" (una canción) y "Su nombre es Abraham Jarvis" (un video)
+SOBRE_JARVIS = re.compile(r"\b(jarvis|yarvis|jervis|el asistente|la ia)\b", re.I)
+
+
 def _guardar(hechos):
     existentes = [h["texto"] for h in memoria.listar_hechos()]
     nuevos = []
     for h in hechos:
-        if memoria.PROHIBIDO.search(h) or memoria.NUMERO_LARGO.search(h):
+        if memoria.PROHIBIDO.search(h) or memoria.NUMERO_LARGO.search(h) or SOBRE_JARVIS.search(h):
             continue
         if any(_parecido(h, e) > 0.8 for e in existentes + nuevos):
             continue

@@ -8,6 +8,7 @@ envía nada. Si la app está en la bandeja, se muestra minimizada (sin quitarte 
 mientras lee y luego vuelve a como estaba.
 
 Requisito: la app de WhatsApp para Windows con la sesión iniciada (vinculada con el celular).
+Escribir, llamar y leer un chat: whatsapp_chat.py (siempre por orden tuya y con confirmación).
 """
 import re
 import time
@@ -203,6 +204,11 @@ def leer_chats(espera=10.0, volcar=False):
             c = interpretar_fila(nombre_fila, hijo)
             if c is not None:
                 chats.append(c)
+        try:   # la agenda de nombres (para entender nombres mal dictados al escribirles)
+            import whatsapp_chat
+            whatsapp_chat.recordar_nombres([c["nombre"] for c in chats])
+        except Exception:
+            pass
         return chats
     finally:
         if not visible:

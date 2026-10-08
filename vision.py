@@ -3,7 +3,14 @@
 Nube (por defecto Groq, formato OpenAI) si hay internet y clave, con respaldos en otras nubes
 gratis (config.json → vision.respaldos, p. ej. Google Gemini) cuando Groq llega a su límite;
 si nada responde, un modelo local de Ollama con visión (qwen3.5, qwen2.5vl, gemma3...).
+
+Límites de uso: cuando una nube contesta 429, queda en pausa el tiempo que pide (o 60 s) y las
+siguientes miradas van directo a la siguiente o al modelo local, sin perder tiempo en otro 429
+seguro (antes cada mirada chocaba primero con Groq). Lo de fondo (ver(..., fondo=True): los
+vistazos y el saludo de presencia.py) usa primero el modelo local: así no se come la cuota que
+necesitan tus peticiones.
 """
+import time
 import base64
 import io
 import os
@@ -73,22 +80,43 @@ def _nube_varias(conf, nube, sistema, instruccion, lista_b64):
     return r.choices[0].message.content or ""
 
 
+PAUSA_POR_LIMITE = 60   # s que una nube queda en pausa tras un 429 que no dice cuánto esperar
+
+
+def _en_pausa(nube, ahora=None):
+    """¿Esa nube dijo hace poco que llegó a su límite? (se comparte con cerebro.py)"""
+    return cerebro._saturado.get(nube["modelo"], 0) > (time.time() if ahora is None else ahora)
+
+
+def libres(conf):
+    """Las nubes con visión que no están en pausa por límite de uso."""
+    return [n for n in _proveedores(conf) if not _en_pausa(n)]
+
+
 def _en_la_nube(conf, sistema, instruccion, lista_b64):
-    """Prueba cada nube con visión; la primera que conteste gana. RuntimeError si ninguna."""
+    """Prueba cada nube con visión que no esté en pausa; la primera que conteste gana.
+    RuntimeError si ninguna."""
     ultimo = None
-    for nube in _proveedores(conf):
+    for nube in libres(conf):
         try:
-            return _limpiar(_nube_varias(conf, nube, sistema, instruccion, lista_b64))
+            texto = _limpiar(_nube_varias(conf, nube, sistema, instruccion, lista_b64))
+            cerebro._saturado.pop(nube["modelo"], None)
+            return texto
         except Exception as e:
             ultimo = e
-            print(f"[La visión en {nube['modelo']} falló ({type(e).__name__}: {str(e)[:120]}); "
-                  "pruebo la siguiente]")
+            if "429" in str(e) or "rate limit" in str(e).lower():
+                espera = cerebro.espera_sugerida(e) or PAUSA_POR_LIMITE
+                cerebro._saturado[nube["modelo"]] = time.time() + espera
+                print(f"[La visión en {nube['modelo']} llegó a su límite; la dejo en pausa {espera:.0f} s]")
+            else:
+                print(f"[La visión en {nube['modelo']} falló ({type(e).__name__}: {str(e)[:120]}); "
+                      "pruebo la siguiente]")
     raise RuntimeError("ninguna nube con visión respondió") from ultimo
 
 
 def _usar_nube(conf):
     modo = conf.get("modo", "auto")
-    nubes = _proveedores(conf)
+    nubes = libres(conf)
     if modo == "offline" or not nubes:
         return False
     if modo == "online":
@@ -113,7 +141,14 @@ def _local_varias(conf, sistema, instruccion, lista_b64):
     return r.message.content or ""
 
 
-def _ver(conf, sistema, instruccion, lista_b64):
+def _ver(conf, sistema, instruccion, lista_b64, fondo=False):
+    if fondo:   # de fondo: primero tu GPU; la nube solo si el local falla y hay una libre
+        try:
+            return _limpiar(_local_varias(conf, sistema, instruccion, lista_b64))
+        except Exception as e:
+            if not _usar_nube(conf):
+                raise RuntimeError("No pude usar el modelo de visión local.") from e
+            return _en_la_nube(conf, sistema, instruccion, lista_b64)
     if _usar_nube(conf):
         try:
             return _en_la_nube(conf, sistema, instruccion, lista_b64)
@@ -127,8 +162,10 @@ def _ver(conf, sistema, instruccion, lista_b64):
                            f"{conf.get('local_modelo', 'qwen3.5:4b')}'.") from e
 
 
-def ver(cfg, img, instruccion, sistema, max_tokens=None, lado=None, reglas=REGLAS_PERSONAS):
+def ver(cfg, img, instruccion, sistema, max_tokens=None, lado=None, reglas=REGLAS_PERSONAS,
+        fondo=False):
     """Devuelve el texto que respondió el modelo de visión (o lanza RuntimeError).
+    fondo=True: nadie la pidió (vistazos, saludos): va primero al modelo local.
     lado: reduce la imagen a ese tamaño máximo (menos tokens: el plan gratis de Groq limita
     los tokens de entrada por minuto y cada foto grande cuesta ~2.000).
     reglas: REGLAS_PERSONAS (el público) o REGLAS_USUARIO (te mira a ti)."""
@@ -138,7 +175,7 @@ def ver(cfg, img, instruccion, sistema, max_tokens=None, lado=None, reglas=REGLA
     if lado:
         img = img.copy()
         img.thumbnail((lado, lado))
-    return _ver(conf, sistema + "\n\n" + reglas, instruccion, [_b64(img)])
+    return _ver(conf, sistema + "\n\n" + reglas, instruccion, [_b64(img)], fondo)
 
 
 def ver_varias(cfg, imagenes, instruccion, sistema):

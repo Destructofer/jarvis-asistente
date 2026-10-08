@@ -464,6 +464,64 @@ y lo empieza a usar. Puedes tener varios personajes: "Jarvis, usa el avatar de I
 clasifica mal un GIF: "Jarvis, ese GIF es de celebrando". Detalles y categorías en
 `vaultboy/README.md`. Sin avatares se ve el reactor azul de siempre (`hud.estilo`).
 
+## Escribir y llamar por WhatsApp (`whatsapp_chat.py`)
+
+- **"Jarvis, dile a Ana que llego tarde a la junta"**: abre el chat de Ana, lee lo último de la
+  conversación (con el modelo de visión **local**: no sale de tu PC), redacta el mensaje **en tu
+  voz** y bien escrito (profesional por omisión; también *amable*, *formal* o *breve*), te lo
+  muestra y **solo lo envía si confirmas**. No inventa datos, fechas ni promesas.
+- **"Hazlo más corto" / "más formal" / "agrégale que llevo los documentos"**: lo vuelve a
+  redactar y te lo vuelve a mostrar. **"Mándaselo tal cual: ya voy"**: sin retocar.
+- **"Llama a mi mamá por WhatsApp" / "videollamada con Luis"**: confirma y marca.
+- **"¿Qué me dijo Ana?"**: abre el chat (queda como leído) y te lo resume.
+- **"Escríbeme a mí"** usa tu propio chat (el de "(You)"), útil para notas.
+
+**Nombres mal entendidos:** Whisper escribe los nombres como suenan ("Yun Cook" llega como
+"jumcook") y WhatsApp solo busca letras exactas. Jarvis compara por **sonido en español** (y/j/ll,
+m/n, c/k/q, b/v, h muda, "oo"="u": "jumcook" = "Yun Cook" = `yunkuk`), contra una agenda local de
+los nombres que ha visto en tu WhatsApp (`datos/whatsapp_contactos.json`, no se sube); si no está,
+busca pedazos del nombre ("cook", "jumc"...) y se queda con el más parecido. Siempre va al más
+parecido, y la confirmación muestra el nombre real antes de enviar. Si no encuentra a nadie, te
+sugiere el más cercano ("¿Quisiste decir Yun Cook?"). Si hay varios chats igual de parecidos
+("Ana López" y "Ana Sofía"), pregunta cuál. **Seguridad:** antes de
+escribir verifica que la caja sea la del chat correcto ("Type a message to <nombre>"); si algo no
+cuadra, no escribe nada. Verifica que el texto quedó bien escrito antes de enviarlo y que la caja
+se vació después. Desde el teléfono no se puede enviar (pide confirmación). Abrir un chat lo marca
+como leído, así que solo lo abre cuando pides escribir, llamar o leer.
+
+Cómo funciona: por accesibilidad (UI Automation) con la app de WhatsApp para Windows 2.26 en inglés
+(buscador → tabla "Search results." con secciones → clic). La app no expone el texto de los
+mensajes (solo quién los mandó), por eso el contexto se lee con visión local. La primera acción de
+la sesión tarda ~7 s (WhatsApp arma su árbol de accesibilidad); después, abrir ~2.5 s y enviar ~1.5 s.
+
+## Control desde el teléfono (`remoto.py`, Supabase)
+
+Dale órdenes a Jarvis desde tu teléfono, en cualquier lugar (no solo en tu Wi-Fi).
+
+1. **Vincular:** "Jarvis, conecta mi teléfono". La primera vez te abre Supabase para copiar la
+   *Publishable key* (no es secreta; se pide una sola vez). Luego abre un **código QR**: escanéalo
+   con la cámara del teléfono y agrega la página a tu pantalla de inicio. El QR se borra en 3 min.
+2. **Usar:** en https://abraham-src.github.io/jarvis-control/ escribes o dictas (🎤) una orden, o
+   tocas un botón rápido (pendientes, resumen del día, qué suena, pausa, clima, WhatsApp). Jarvis
+   la toma en ~2 s, la procesa como una orden escrita en la PC y te contesta ahí mismo (~4 s de
+   ida y vuelta). Arriba ves si la PC está en línea.
+3. **Revocar:** "Jarvis, desconecta mis teléfonos" (por ejemplo, si lo pierdes). "¿Mi teléfono está
+   conectado?" te dice cuántos hay y cuándo se usaron.
+
+**Seguridad.** El teléfono recibe una llave de 256 bits que va después del `#` de la dirección del
+QR: esa parte nunca se manda a ningún servidor, y la página la borra de la barra y la guarda solo en
+el teléfono. En Supabase solo queda su huella SHA-256. Las tablas (`supabase/remoto.sql`) están
+cerradas: con la llave pública no se pueden leer ni escribir; el teléfono solo puede usar dos
+funciones que exigen su llave (máx. 20 órdenes por minuto). **Desde el teléfono no se hace nada que
+pida confirmación** (apagar, reiniciar, borrar, cerrar sin guardar). La página es pública (repo
+`abraham-src/jarvis-control`) pero no contiene ninguna llave: sin tu QR no puede hacer nada, y todo
+lo que llega se muestra como texto (nunca como HTML).
+
+Las respuestas no suenan en la PC (`remoto.hablar_en_pc` en `config.json`), y las órdenes se
+borran a los 7 días. Las tablas nuevas se crean solas con la contraseña de la base guardada al
+conectar Supabase (`nube.ejecutar_sql`); en una instalación nueva, `conectar_supabase` ya las crea
+y guarda la llave pública.
+
 ## ¿Era para mí? Una red neuronal propia (`para_mi.py`)
 
 En modo conversación Jarvis escucha todo, también videos, juegos y pláticas con otras personas.

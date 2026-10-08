@@ -1,0 +1,12 @@
+{
+  "name": "Jarvis",
+  "short_name": "Jarvis",
+  "description": "Dale órdenes a Jarvis desde tu teléfono",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#06121a",
+  "theme_color": "#06121a",
+  "lang": "es-MX",
+  "icons": [{ "src": "icono.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
