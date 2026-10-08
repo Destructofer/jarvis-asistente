@@ -223,7 +223,7 @@ def resumen_whatsapp(maximo=6):
         return "Tu WhatsApp de escritorio no tiene la sesión iniciada; vincúlalo con tu celular y ya te digo tus mensajes."
     except Exception as e:
         print(f"[WhatsApp: {type(e).__name__}: {str(e)[:80]}]")
-        return ""
+        return None   # falló (distinto de "" = nada que contar)
     return redactar(chats, maximo)
 
 

@@ -160,7 +160,7 @@ def resumen_clima(dias=2):
         return describir(pronostico(lugar), lugar.get("lugar", ""), dias)
     except Exception as e:
         print(f"[Clima: {type(e).__name__}: {str(e)[:80]}]")
-        return ""
+        return None   # falló (sin internet, etc.)
 
 
 @skill("clima",

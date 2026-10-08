@@ -154,7 +154,7 @@ def resumen_correos(horas=24, maximo_dichos=6):
         return ""
     except Exception as e:
         print(f"[Correo: {type(e).__name__}: {str(e)[:80]}]")
-        return ""
+        return None   # falló (distinto de "" = no está conectado)
     if not importantes:
         return "En tu correo no llegó nada importante."
     nombres = {c[0]: c[1] for c in CATEGORIAS}

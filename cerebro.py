@@ -391,6 +391,39 @@ def espera_sugerida(e):
     return minutos * 60 + (valor / 1000 if m.group(3).lower() == "ms" else valor)
 
 
+def asegurar_ollama(espera=20):
+    """Si Ollama (los modelos locales) no responde, lo arranca. Devuelve True si quedó listo."""
+    import os
+    import subprocess
+    try:
+        import ollama
+        ollama.list()
+        return True
+    except Exception:
+        pass
+    app = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama app.exe")
+    try:
+        if os.path.exists(app):
+            subprocess.Popen([app], creationflags=0x00000008 | 0x08000000)   # DETACHED | sin ventana
+        else:
+            subprocess.Popen(["ollama", "serve"], creationflags=0x00000008 | 0x08000000)
+    except OSError as e:
+        print(f"[Ollama no responde y no pude arrancarlo: {e}]")
+        return False
+    print("[Ollama no respondía: lo arranqué]")
+    fin = time.time() + espera
+    while time.time() < fin:
+        time.sleep(1)
+        try:
+            import ollama
+            ollama.list()
+            return True
+        except Exception:
+            continue
+    print("[Ollama sigue sin responder]")
+    return False
+
+
 def nube_disponible(cfg):
     """¿Contestaría ahora un modelo de la nube? (hay red y al menos uno no está al límite)."""
     if cfg.get("modo", "auto") == "offline":

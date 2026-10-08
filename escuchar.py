@@ -809,6 +809,22 @@ AL_FALTAR_MEMORIA = None   # lo pone genesis.py: fn(texto) para avisarte (máx. 
 _aviso_memoria = {"t": 0.0}
 
 
+def es_falla_de_gpu(e):
+    """Errores de la tarjeta de video que NO son falta de memoria (p. ej. "cuBLAS failed with
+    status CUBLAS_STATUS_NOT_SUPPORTED" con la tarjeta saturada por otro modelo)."""
+    t = str(e).lower()
+    return any(x in t for x in ("cublas", "cudnn", "cuda failed", "cuda error", "cuda_error"))
+
+
+def _pasar_a_cpu(e):
+    """La GPU falló: Whisper sigue en el procesador y la GPU se vuelve a probar en 5 min."""
+    print(f"[Whisper: la GPU falló ({str(e)[:70]}); sigo en el procesador]")
+    with _lock_modelos:
+        _gpu["ok"] = False
+        _modelos.clear()
+    _reprobar_gpu_luego()
+
+
 def es_falta_de_memoria(e):
     t = str(e).lower()
     return isinstance(e, MemoryError) or any(x in t for x in (
@@ -884,6 +900,9 @@ def _transcribir_local(audio, modelo, prompt):
                       if _segmento_valido(s.no_speech_prob, s.avg_logprob, s.compression_ratio, s.text)]
             return " ".join(p for p in partes if p).strip()
         except Exception as e:
+            if es_falla_de_gpu(e) and not es_falta_de_memoria(e) and intento == 0:
+                _pasar_a_cpu(e)   # se reintenta ya en el procesador
+                continue
             if not es_falta_de_memoria(e):
                 raise
             print(f"[Whisper se quedó sin memoria ({str(e)[:60]}); libero memoria y reintento]")
@@ -916,7 +935,12 @@ def transcribir(audio, modelo="small", prompt=None, nube=False):
             return texto
     try:
         texto = _transcribir_local(audio, modelo, prompt)
-    except SinMemoria:
+    except Exception as e:
+        if not isinstance(e, SinMemoria):
+            # Nada de transcribir debe tumbar el bucle principal (antes un error de cuBLAS
+            # subía hasta main() y Jarvis se reiniciaba)
+            print(f"[No pude transcribir: {type(e).__name__}: {str(e)[:100]}]")
+            return ""
         # rescate: la transcripción en la nube no usa tu memoria
         texto = _transcribir_nube(audio, prompt) if modo in ("auto", "online") else None
         if texto is None:

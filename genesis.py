@@ -1749,6 +1749,7 @@ def _precalentar(cfg):
     """Deja todo listo en segundo plano para que la primera orden no pague el arranque en
     frío: conexión con la nube, Whisper local (en la GPU si se puede) y los rellenos."""
     def hacer():
+        cerebro.asegurar_ollama()   # visión local, memoria, detector y modelo local dependen de él
         cerebro.precalentar(cfg)
         voz.mantener_caliente()  # abre ya la conexión con ElevenLabs
         if cfg.get("voz_activa", True):
@@ -1768,6 +1769,15 @@ def _precalentar(cfg):
             except Exception as e:
                 print(f"[No pude abrir el sistema de la demo: {e}]")
     threading.Thread(target=hacer, daemon=True, name="precalentar").start()
+
+    def vigilar_ollama():   # si se cierra a media sesión, se vuelve a abrir
+        while True:
+            time.sleep(300)
+            try:
+                cerebro.asegurar_ollama()
+            except Exception:
+                pass
+    threading.Thread(target=vigilar_ollama, daemon=True, name="vigilar-ollama").start()
 
 
 _actividad = {"ultima": time.time()}

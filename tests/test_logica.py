@@ -2584,3 +2584,65 @@ class NombresQueSuenanIgual(unittest.TestCase):
         self.assertEqual(self.W._agenda(), ["Yun Cook", "Mamá ❤️"])
         self.assertEqual(self.W.mas_parecido("jumcook", self.W._agenda())[0], "Yun Cook")
         self.assertIsNone(self.W.mas_parecido("Pedro", self.W._agenda()))
+
+
+class GrietasDelRegistro(unittest.TestCase):
+    """Errores reales que aparecieron en datos/genesis.log."""
+
+    def test_un_error_de_cublas_no_tumba_a_jarvis(self):
+        orig = (escuchar._cargar_modelo, escuchar._reprobar_gpu_luego, escuchar._gpu["ok"], escuchar._cfg)
+        intentos = []
+
+        class Modelo:
+            def transcribe(self, audio, **kw):
+                return [], None
+
+        def cargar(nombre):
+            intentos.append(escuchar._gpu["ok"])
+            if escuchar._gpu["ok"]:
+                raise RuntimeError("cuBLAS failed with status CUBLAS_STATUS_NOT_SUPPORTED")
+            return Modelo()
+        try:
+            escuchar._cargar_modelo, escuchar._reprobar_gpu_luego = cargar, lambda: None
+            escuchar._gpu["ok"] = True
+            escuchar._cfg = lambda: {"stt": {"modo": "local"}}
+            self.assertEqual(escuchar.transcribir(np.zeros(1600, dtype=np.float32)), "")
+            self.assertEqual(intentos, [True, False])             # GPU falló -> procesador
+            escuchar._cargar_modelo = lambda n: (_ for _ in ()).throw(ValueError("otra cosa"))
+            self.assertEqual(escuchar.transcribir(np.zeros(1600, dtype=np.float32)), "")   # nunca truena
+        finally:
+            escuchar._cargar_modelo, escuchar._reprobar_gpu_luego, escuchar._gpu["ok"], escuchar._cfg = orig
+
+    def test_el_resumen_dice_lo_que_no_pudo_revisar(self):
+        import ciclo
+        def falla():
+            raise OSError("sin red")
+        r = ciclo.armar_resumen(clima_fn=lambda: None, whatsapp_fn=falla, correo_fn=lambda: "")
+        self.assertIn("No pude revisar el clima ni tu WhatsApp", r)
+        self.assertNotIn("nada urgente", r)
+        r = ciclo.armar_resumen(clima_fn=lambda: "", whatsapp_fn=lambda: "", correo_fn=lambda: "")
+        self.assertNotIn("No pude revisar", r)
+
+    def test_voz_sin_conexion_aparta_a_edge_de_inmediato(self):
+        import voz
+        orig = (voz._edge_trozos, voz._sapi_pcm, voz._motores, dict(voz._caidos), dict(voz._fallos))
+
+        class ConnectionTimeoutError(Exception):
+            pass
+
+        def edge(frase):
+            raise ConnectionTimeoutError("Connection timeout to host wss://speech.platform.bing.com")
+            yield
+        try:
+            voz._edge_trozos = edge
+            voz._sapi_pcm = lambda frase: np.zeros(100, dtype=np.int16)
+            voz._motores = lambda vn, f=None: ["edge", "windows"]
+            voz._caidos.clear()
+            voz._fallos.clear()
+            clip = voz._Clip("Hola, ¿cómo estás?")
+            voz._generar(clip, None)
+            self.assertGreater(voz._caidos.get("edge", 0), time.time())   # apartado al primer fallo
+        finally:
+            voz._edge_trozos, voz._sapi_pcm, voz._motores = orig[:3]
+            voz._caidos.clear(); voz._caidos.update(orig[3])
+            voz._fallos.clear(); voz._fallos.update(orig[4])

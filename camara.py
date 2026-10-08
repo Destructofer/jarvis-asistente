@@ -94,7 +94,11 @@ class _Lector:
         ultimo_ok = time.time()
         try:
             while not parar.is_set():
-                ok, frame = cap.read()
+                try:
+                    ok, frame = cap.read()
+                except cv2.error as e:   # el controlador de la cámara falló: se reabre
+                    print(f"[Cámara: error del controlador ({str(e)[:60]}); la reabro]")
+                    break
                 if parar.is_set():
                     break  # se abandonó este hilo mientras leía: ya hay otro
                 if ok and frame is not None:
@@ -111,7 +115,10 @@ class _Lector:
                 if time.time() - self.ultimo_uso > 180:
                     break
         finally:
-            cap.release()
+            try:
+                cap.release()
+            except Exception:
+                pass   # OpenCV a veces truena al soltarla ("Unknown C++ exception"): ya no importa
 
     def _colgado(self):
         """Vivo pero sin entregar imagen hace más de 4 s (p. ej. la lectura se bloqueó)."""

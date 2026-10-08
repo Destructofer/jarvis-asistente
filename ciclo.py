@@ -175,15 +175,18 @@ def armar_resumen(ahora=None, clima_fn=None, whatsapp_fn=None, correo_fn=None):
     fuentes = {"clima": clima_fn or clima.resumen_clima,
                "whatsapp": whatsapp_fn or whatsapp.resumen_whatsapp,
                "correo": correo_fn or correo.resumen_correos}
-    resultados = {}
+    resultados, fallaron = {}, []
     with ThreadPoolExecutor(max_workers=3) as ex:
         futuros = {k: ex.submit(f) for k, f in fuentes.items()}
         for k, f in futuros.items():
             try:
-                resultados[k] = f.result(timeout=25) or ""
+                r = f.result(timeout=25)
             except Exception as e:
                 print(f"[Resumen: {k} falló ({type(e).__name__})]")
-                resultados[k] = ""
+                r = None
+            if r is None:   # falló: se dice (antes quedaba en silencio y sonaba a "nada urgente")
+                fallaron.append(k)
+            resultados[k] = r or ""
     saludo = ("Buenos días" if ahora.hour < 12 else "Buenas tardes" if ahora.hour < 19 else "Buenas noches")
     nombre = _nombre()
     partes = [f"{saludo}{', ' + nombre if nombre else ''}. Son las {hora_dicha(ahora)}."]
@@ -205,7 +208,12 @@ def armar_resumen(ahora=None, clima_fn=None, whatsapp_fn=None, correo_fn=None):
         partes.append(resultados["whatsapp"])
     if resultados["correo"]:
         partes.append(resultados["correo"])
-    if len(partes) <= 2 and not resultados["clima"]:
+    if fallaron:
+        nombres = {"clima": "el clima", "whatsapp": "tu WhatsApp", "correo": "tu correo"}
+        lista = [nombres[k] for k in fallaron]
+        partes.append("No pude revisar " + (" ni ".join(lista) if len(lista) <= 2
+                                            else ", ".join(lista[:-1]) + " ni " + lista[-1]) + ".")
+    elif len(partes) <= 2 and not resultados["clima"]:
         partes.append("No tienes pendientes ni nada urgente.")
     partes.append("¿Por dónde empezamos?")
     return " ".join(partes)
