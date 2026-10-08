@@ -27,6 +27,7 @@ import bitacora  # lo que Jarvis de verdad hizo (para no afirmar lo que no hizo)
 import juegos  # Jarvis aprieta botones de verdad en el juego (control virtual de Xbox o teclado)
 import para_mi  # red neuronal local: ¿lo que se dijo sin llamarlo era para Jarvis?
 import remoto  # órdenes desde tu teléfono, por Supabase
+import whatsapp_chat  # escribirle y llamarle a tus contactos de WhatsApp (siempre con tu confirmación)
 import habitos  # aprende tus rutinas (música al trabajar, apps a cierta hora) y te las ofrece
 import ciclo  # el día y la noche: resumen de la mañana y avisos de noche
 import clima  # noqa: F401  (registra la skill del clima)
@@ -416,8 +417,12 @@ GRUPOS = [
     (r"correo|gmail|mail|email|banco|bbva|banorte|santander|occ|computrabajo|vacante|hospital|"
      r"gbm|inversion|me escribio|me llego",
      ["correos_importantes", "conectar_gmail"]),
-    (r"whats|wasap|guasap|mensaje|me escribio|chat|contestar|responder",
-     ["whatsapp_pendientes"]),
+    (r"whats|wasap|guasap|mensaje|me escribio|chat|contestar|responder|contestale|dile a|dile que|"
+     r"mandale|escribele|avisale|llama a|llamale|marcale|llamada|videollamada",
+     ["whatsapp_pendientes", "whatsapp_mensaje", "whatsapp_llamar", "whatsapp_leer_chat"]),
+    (r"mas corto|mas largo|mas formal|mas amable|cambialo|cambiale|agregale|quitale|mandalo asi|tal cual|"
+     r"asi esta bien|corrigelo",
+     ["whatsapp_corregir"]),
     (r"pendiente|me quedo|me falta|tengo que|manana tengo|anota|ya termine|tacha|resumen|ponme al dia|"
      r"como viene el dia|buenos dias",
      ["anotar_pendiente", "ver_pendientes", "completar_pendiente", "resumen_del_dia"]),
@@ -1266,6 +1271,11 @@ def confirmar(cfg, pregunta):
     """Pide confirmación. Si la respuesta es no (o no hubo respuesta), queda anotado: el modelo
     no debe volver a pedir lo mismo en esta orden (antes repetía la misma pregunta hasta 8
     veces y cada una se tragaba lo siguiente que decías)."""
+    if _remota_actual["orden"] is not None:
+        # desde el teléfono no se confirma nada (enviar mensajes, apagar, borrar...)
+        _remota_actual["bloqueada"] = _remota_actual["bloqueada"] or "algo que pide confirmación"
+        _confirmacion["negada"] = True
+        return False
     ok = _preguntar(cfg, pregunta)
     if not ok:
         _confirmacion["negada"] = True
@@ -1555,6 +1565,11 @@ def _personalidad(cfg, en_exposicion):
 # herramientas van en la petición (elegir_herramientas): con el plan gratis de Groq cada
 # instrucción que va en TODAS las peticiones cuenta para el límite por minuto.
 GUIAS = {
+    "whatsapp_mensaje": "Para escribirle a alguien por WhatsApp usa whatsapp_mensaje con el contacto "
+                        "como lo nombró y en que_decir LO QUE QUIERE DECIR con sus palabras (no lo "
+                        "redactes tú: la herramienta lee el chat y lo redacta). Tal cual solo si lo "
+                        "pidió. Si luego pide cambiar el mensaje propuesto, usa whatsapp_corregir. "
+                        "Nunca digas que lo enviaste si la herramienta no lo confirma.",
     "analizar_documento": "Para resumir, analizar o sacar la idea general o los puntos clave de un "
                           "archivo (PDF, Word, Excel, PowerPoint, imagen, carpeta o zip) usa "
                           "analizar_documento; si pide ponerlo en un bloc de notas o Word, usa su "
@@ -2078,6 +2093,9 @@ def main(persistente=False):
     para_mi.hablar = lambda texto: avisar(cfg, texto)
     escuchar.AL_FALTAR_MEMORIA = lambda texto: avisar(cfg, texto)
     remoto.hablar = lambda texto: avisar(cfg, texto)
+    whatsapp_chat.configurar(cfg)
+    whatsapp_chat.confirmar = lambda pregunta: confirmar(cfg, pregunta)
+    whatsapp_chat.hablar = lambda texto: avisar(cfg, texto)
     remoto.entregar = lambda orden: (_remotas.put(orden), escuchar.CONVERSAR.set())
     remoto.iniciar(cfg)
     semantica.iniciar()  # indexa tus conversaciones por significado (en segundo plano)

@@ -464,6 +464,29 @@ y lo empieza a usar. Puedes tener varios personajes: "Jarvis, usa el avatar de I
 clasifica mal un GIF: "Jarvis, ese GIF es de celebrando". Detalles y categorías en
 `vaultboy/README.md`. Sin avatares se ve el reactor azul de siempre (`hud.estilo`).
 
+## Escribir y llamar por WhatsApp (`whatsapp_chat.py`)
+
+- **"Jarvis, dile a Ana que llego tarde a la junta"**: abre el chat de Ana, lee lo último de la
+  conversación (con el modelo de visión **local**: no sale de tu PC), redacta el mensaje **en tu
+  voz** y bien escrito (profesional por omisión; también *amable*, *formal* o *breve*), te lo
+  muestra y **solo lo envía si confirmas**. No inventa datos, fechas ni promesas.
+- **"Hazlo más corto" / "más formal" / "agrégale que llevo los documentos"**: lo vuelve a
+  redactar y te lo vuelve a mostrar. **"Mándaselo tal cual: ya voy"**: sin retocar.
+- **"Llama a mi mamá por WhatsApp" / "videollamada con Luis"**: confirma y marca.
+- **"¿Qué me dijo Ana?"**: abre el chat (queda como leído) y te lo resume.
+- **"Escríbeme a mí"** usa tu propio chat (el de "(You)"), útil para notas.
+
+Si hay varios chats parecidos ("Ana López" y "Ana Sofía"), pregunta cuál. **Seguridad:** antes de
+escribir verifica que la caja sea la del chat correcto ("Type a message to <nombre>"); si algo no
+cuadra, no escribe nada. Verifica que el texto quedó bien escrito antes de enviarlo y que la caja
+se vació después. Desde el teléfono no se puede enviar (pide confirmación). Abrir un chat lo marca
+como leído, así que solo lo abre cuando pides escribir, llamar o leer.
+
+Cómo funciona: por accesibilidad (UI Automation) con la app de WhatsApp para Windows 2.26 en inglés
+(buscador → tabla "Search results." con secciones → clic). La app no expone el texto de los
+mensajes (solo quién los mandó), por eso el contexto se lee con visión local. La primera acción de
+la sesión tarda ~7 s (WhatsApp arma su árbol de accesibilidad); después, abrir ~2.5 s y enviar ~1.5 s.
+
 ## Control desde el teléfono (`remoto.py`, Supabase)
 
 Dale órdenes a Jarvis desde tu teléfono, en cualquier lugar (no solo en tu Wi-Fi).

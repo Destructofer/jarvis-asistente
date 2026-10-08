@@ -2505,3 +2505,45 @@ class ControlDesdeElTelefono(unittest.TestCase):
         finally:
             genesis._procesar = orig
         self.assertIsNone(genesis._remota_actual["orden"])
+
+
+class WhatsAppEscribirYLlamar(unittest.TestCase):
+    """whatsapp_chat.py: elegir bien el chat antes de escribir nada."""
+
+    def setUp(self):
+        import whatsapp_chat
+        self.W = whatsapp_chat
+
+    def test_parecido_de_nombres(self):
+        p = self.W.parecido
+        self.assertEqual(p("Ana López", "Ana López"), 1.0)
+        self.assertGreaterEqual(p("mi mamá", "Mamá ❤️"), 0.75)
+        self.assertGreaterEqual(p("ana", "Ana López"), 0.75)
+        self.assertLess(p("Ana", "Mariana Ruiz"), 0.75)
+        self.assertLess(p("Luis", "Ana López"), 0.75)
+
+    def test_resultados_por_secciones(self):
+        filas = ["Chats", "Ana López 4:20 PM Nos vemos mañana", "Abraham Tc (You) Message yourself",
+                 "Contacts", "Ana Sofía Hey there! I am using WhatsApp.", "Messages",
+                 "Ana López 9/24/2026 ana me debe 200"]
+        c = self.W.candidatos(filas)
+        self.assertEqual([x[1] for x in c], ["Ana López", "Abraham Tc", "Ana Sofía Hey there!"])
+        self.assertTrue(c[1][2])                                          # el chat propio
+        self.assertEqual(self.W.elegir("Ana López", c), ("ok", c[0]))
+        estado, nombres = self.W.elegir("Ana", c)
+        self.assertEqual(estado, "varios")                                # Ana López y Ana Sofía: pregunta
+        self.assertEqual(self.W.elegir("yo", c), ("ok", c[1]))
+        self.assertEqual(self.W.elegir("Pedro", c), ("ninguno", None))
+
+    def test_caja_del_mensaje(self):
+        caja = type("C", (), {"element_info": type("I", (), {"name": "Type a message to Ana López"})()})()
+        self.assertEqual(self.W.destinatario(caja), "Ana López")
+        self.assertEqual(self.W.destinatario(None), "")
+
+    def test_desde_el_telefono_no_se_confirma(self):
+        genesis._remota_actual.update(orden={"id": 1}, bloqueada=None)
+        try:
+            self.assertFalse(genesis.confirmar({}, "¿Le mando a Ana: hola?"))
+            self.assertTrue(genesis._remota_actual["bloqueada"])
+        finally:
+            genesis._remota_actual.update(orden=None, bloqueada=None)
