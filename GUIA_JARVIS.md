@@ -464,6 +464,34 @@ y lo empieza a usar. Puedes tener varios personajes: "Jarvis, usa el avatar de I
 clasifica mal un GIF: "Jarvis, ese GIF es de celebrando". Detalles y categorías en
 `vaultboy/README.md`. Sin avatares se ve el reactor azul de siempre (`hud.estilo`).
 
+## La app de escritorio (`jarvis_app.pyw`, `app/`, `app_servidor.py`)
+
+El acceso directo **Jarvis** de tu escritorio (o "Abrir la app" en el ícono junto al reloj) abre la
+ventana de Jarvis. Si Jarvis no está corriendo, lo arranca. Para volver a crear el acceso directo:
+`python jarvis_app.pyw --acceso-directo`.
+
+- **Jarvis:** el **orbe** que reacciona en vivo. Cambia de color y movimiento según lo que hace
+  (azul en espera, cian escuchando con ondas, ámbar pensando con los anillos girando rápido,
+  violeta mirando, rojo si algo falló) y **crece y se deforma con el volumen real de su voz**
+  mientras habla. Abajo, lo que oyó y lo que dijo, y una caja para escribirle órdenes (las
+  respuestas suenan en la PC y aparecen ahí).
+- **Personalidades:** las 16, con su descripción y si traen voz propia. Un clic y cambia (y te
+  saluda con su estilo).
+- **Avatares:** cada personaje con su vista previa animada; "Usar" lo pone en la esquina; "Ver
+  animaciones" muestra todas y deja corregir qué acción representa cada una. **Arrastra GIF**
+  (o elígelos) para agregarlos a un personaje existente o crear uno nuevo; Jarvis les quita el
+  fondo y los clasifica solo (o eliges tú la acción).
+- **Voz:** motor, voz de Microsoft (45 en español), velocidad y tono. "Probar" suena con lo que
+  tienes en pantalla sin guardarlo; "Guardar" la deja como voz base (las personalidades con voz
+  propia siguen con la suya).
+- **Ajustes:** hablar en voz alta, despertar con "Jarvis", saludarte al llegar, aprender hábitos,
+  el personaje de la esquina (estilo, subtítulos, tamaño), qué tan fácil se calla con el ruido…
+
+Por dentro: Jarvis sirve la interfaz y una API **solo en 127.0.0.1** con una llave
+(`datos/app.json`); se rechaza todo lo que no traiga la llave o venga de otro "Host", y los archivos
+solo salen de las carpetas de avatares. Los cambios se guardan en `config.json`. Las órdenes de
+la app son tuyas en la PC: sí pueden pedir confirmación (las del teléfono no).
+
 ## Escribir y llamar por WhatsApp (`whatsapp_chat.py`)
 
 - **"Jarvis, dile a Ana que llego tarde a la junta"**: abre el chat de Ana, lee lo último de la

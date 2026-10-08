@@ -2646,3 +2646,80 @@ class GrietasDelRegistro(unittest.TestCase):
             voz._edge_trozos, voz._sapi_pcm, voz._motores = orig[:3]
             voz._caidos.clear(); voz._caidos.update(orig[3])
             voz._fallos.clear(); voz._fallos.update(orig[4])
+
+
+class AppDeEscritorio(unittest.TestCase):
+    """app_servidor.py: la API local de la app (seguridad y que cambie lo que debe)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import app_servidor
+        cls.A = app_servidor
+        cls._orig = (app_servidor.DATOS_APP, app_servidor.PUERTO, dict(app_servidor._estado))
+        app_servidor.DATOS_APP = Path(tempfile.mkdtemp()) / "app.json"
+        app_servidor.PUERTO = 0
+        app_servidor._estado.update(servidor=None)
+        app_servidor.iniciar({"app": {"puerto": 0}, "name": "Jarvis"})
+        cls.puerto, cls.llave = app_servidor._estado["puerto"], app_servidor._estado["llave"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.A._estado["servidor"].shutdown()
+        cls.A.DATOS_APP, cls.A.PUERTO = cls._orig[0], cls._orig[1]
+        cls.A._estado.clear()
+        cls.A._estado.update(cls._orig[2])
+
+    def _pedir(self, ruta, llave=True, host=None, cuerpo=None):
+        import json as _j
+        import urllib.error
+        import urllib.request
+        h = {"X-Jarvis-Token": self.llave} if llave else {}
+        if host:
+            h["Host"] = host
+        datos = _j.dumps(cuerpo).encode() if cuerpo is not None else None
+        req = urllib.request.Request(f"http://127.0.0.1:{self.puerto}{ruta}", headers=h, data=datos)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, _j.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, None
+
+    def test_solo_con_llave_y_desde_esta_pc(self):
+        self.assertEqual(self._pedir("/api/ajustes", llave=False)[0], 401)
+        self.assertEqual(self._pedir("/api/ajustes", host="ataque.com")[0], 403)
+        self.assertEqual(self._pedir("/api/ajustes")[0], 200)
+        self.assertEqual(self._pedir("/../config.json", llave=False)[0], 404)
+
+    def test_ajustes_con_valores_reales_por_omision(self):
+        _, a = self._pedir("/api/ajustes")
+        self.assertIs(a["habitos.activo"], True)        # no está en config: vale lo que usa el módulo
+        self.assertEqual(a["para_mi.callarse"], 0.05)
+
+    def test_no_se_sale_de_la_carpeta_de_avatares(self):
+        self.assertIsNone(self.A._ruta_avatar("..", "config.json"))
+        self.assertIsNone(self.A._ruta_avatar("Vault Boy", "../../x.gif"))
+        with self.assertRaises(ValueError):
+            self.A.subir_avatar("Prueba", "malo.exe", "aGVsbG8=")
+
+    def test_voz_validada(self):
+        with self.assertRaises(ValueError):
+            self.A.probar_voz("hola", {"edge_velocidad": "rapidísimo"})
+
+    def test_orden_de_la_app_y_su_respuesta(self):
+        entregadas, eventos = [], []
+        orig = (self.A.entregar, self.A.publicar)
+        try:
+            self.A.entregar = entregadas.append
+            self.A.publicar = lambda tipo, **d: eventos.append((tipo, d))
+            oid = self.A.orden("¿qué hora es?")
+            o = entregadas[0]
+            self.assertEqual((o["origen"], o["texto"], o["hablar"]), ("app", "¿qué hora es?", True))
+            o["responder"]("Son las 5.", True)
+            self.assertIn(("respuesta", {"id": oid, "texto": "Son las 5.", "ok": True}), eventos)
+        finally:
+            self.A.entregar, self.A.publicar = orig
+        genesis._remota_actual.update(orden={"origen": "app"})
+        try:
+            self.assertFalse(genesis._desde_el_telefono())   # la app sí puede pedir confirmación
+        finally:
+            genesis._remota_actual.update(orden=None)

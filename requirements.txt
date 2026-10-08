@@ -77,5 +77,6 @@ vgamepad==0.1.0   # control virtual de Xbox para jugar (juegos.py); instala el d
 cryptography==46.0.3       # respaldos cifrados con tu frase antes de subirlos a Supabase (respaldo.py)
 psycopg[binary]==3.3.6     # crear tablas nuevas en tu Supabase con la contraseña de la base (nube.ejecutar_sql)
 qrcode==8.2                # el código QR para vincular tu teléfono (remoto.py)
+pywebview==6.2.1           # la ventana de la app de escritorio de Jarvis (jarvis_app.pyw)
 
 # Opcional: Whisper en la GPU NVIDIA (mucho más rápido) → pip install -r requirements-gpu.txt

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Jarvis</title>
+<link rel="icon" href="icono.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<nav class="lado" aria-label="Secciones">
+  <div class="marca"><span class="mini-orbe" aria-hidden="true"></span><span id="marca-nombre">Jarvis</span></div>
+  <button class="nav activo" data-seccion="inicio"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/></svg><span>Jarvis</span></button>
+  <button class="nav" data-seccion="personalidades"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-4 3.4-6 6.5-6s5.7 2 6.5 6"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14c2 .7 3.2 2.7 3.5 6"/></svg><span>Personalidades</span></button>
+  <button class="nav" data-seccion="avatares"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M3.5 18l5-5 4 4 3-3 5 5"/></svg><span>Avatares</span></button>
+  <button class="nav" data-seccion="voz"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span>Voz</span></button>
+  <button class="nav" data-seccion="ajustes"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg><span>Ajustes</span></button>
+  <div class="pie-lado"><span class="punto" id="punto"></span><span id="conexion">conectando…</span></div>
+</nav>
+
+<main>
+  <!-- ===== Jarvis: el orbe ===== -->
+  <section id="inicio" class="seccion visible">
+    <div class="escenario">
+      <canvas id="orbe" aria-label="Orbe de Jarvis"></canvas>
+      <div class="rotulo">
+        <div id="estado-texto" class="estado-texto">en espera</div>
+        <div id="persona-texto" class="persona-texto"></div>
+      </div>
+    </div>
+    <div class="dialogo" id="dialogo" aria-live="polite"></div>
+    <form id="forma-orden" class="barra-orden" autocomplete="off">
+      <input id="orden" maxlength="500" placeholder="Escríbele a Jarvis…" aria-label="Orden para Jarvis">
+      <button class="primario" type="submit" aria-label="Enviar">Enviar</button>
+    </form>
+  </section>
+
+  <!-- ===== Personalidades ===== -->
+  <section id="personalidades" class="seccion">
+    <header class="cabeza"><h1>Personalidades</h1><p>Cómo habla Jarvis. Se queda con la que elijas hasta que la cambies.</p></header>
+    <div class="rejilla" id="lista-personalidades"></div>
+  </section>
+
+  <!-- ===== Avatares ===== -->
+  <section id="avatares" class="seccion">
+    <header class="cabeza"><h1>Avatares</h1><p>El personaje animado de la esquina. Cada animación representa lo que Jarvis está haciendo.</p></header>
+    <div class="rejilla avatares" id="lista-avatares"></div>
+    <div class="panel" id="detalle-avatar" hidden>
+      <div class="panel-cabeza"><h2 id="detalle-nombre"></h2><button class="secundario" id="cerrar-detalle">Cerrar</button></div>
+      <div class="animaciones" id="animaciones"></div>
+    </div>
+    <div class="panel">
+      <h2>Agregar animaciones</h2>
+      <div class="campos">
+        <label>Personaje <input id="subir-personaje" list="personajes" placeholder="Vault Boy o uno nuevo"></label>
+        <datalist id="personajes"></datalist>
+        <label>Acción <select id="subir-categoria"><option value="">Que Jarvis la reconozca</option></select></label>
+      </div>
+      <label class="zona" id="zona">
+        <input type="file" id="archivos" accept=".gif,.webp,.png,.apng" multiple hidden>
+        <strong>Arrastra aquí tus GIF</strong><span>o haz clic para elegirlos · GIF, WEBP, PNG · hasta 25 MB</span>
+      </label>
+      <div class="progreso" id="progreso"></div>
+      <p class="nota" id="carpeta-avatares"></p>
+    </div>
+  </section>
+
+  <!-- ===== Voz ===== -->
+  <section id="voz" class="seccion">
+    <header class="cabeza"><h1>Voz</h1><p>La voz base de Jarvis. Algunas personalidades traen la suya.</p></header>
+    <div class="aviso" id="aviso-voz" hidden></div>
+    <div class="panel campos-voz">
+      <label class="interruptor"><input type="checkbox" id="voz-activa"><span></span>Hablar en voz alta</label>
+      <label>Motor
+        <select id="voz-motor">
+          <option value="auto">Automático (la mejor disponible)</option>
+          <option value="edge">Microsoft Edge (natural, en línea)</option>
+          <option value="windows">Windows (sin internet)</option>
+          <option value="elevenlabs">ElevenLabs (si tienes clave)</option>
+        </select>
+      </label>
+      <label>Voz <select id="voz-edge"></select></label>
+      <label>Velocidad <span class="valor" id="vel-valor"></span><input type="range" id="voz-vel" min="-30" max="30" step="1"></label>
+      <label>Tono <span class="valor" id="tono-valor"></span><input type="range" id="voz-tono" min="-20" max="20" step="1"></label>
+      <div class="fila">
+        <input id="voz-prueba" value="Hola, soy Jarvis. Así sueno ahora." maxlength="200" aria-label="Texto de prueba">
+        <button class="secundario" id="probar-voz">Probar</button>
+        <button class="primario" id="guardar-voz">Guardar</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Ajustes ===== -->
+  <section id="ajustes" class="seccion">
+    <header class="cabeza"><h1>Ajustes</h1><p>Se guardan en config.json y aplican al momento.</p></header>
+    <div class="panel lista-ajustes" id="lista-ajustes"></div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

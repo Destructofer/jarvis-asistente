@@ -61,6 +61,17 @@ def _conf():
     return _cfg.get("hud", {}) or {}
 
 
+OBSERVADORES = []   # fn(tipo, **datos): la app de escritorio (app_servidor.publicar)
+
+
+def _avisar(tipo, **datos):
+    for fn in list(OBSERVADORES):
+        try:
+            fn(tipo, **datos)
+        except Exception:
+            pass
+
+
 def _usa_vault():
     """El avatar animado (o el reactor azul si se eligió, o si no hay ningún avatar todavía)."""
     if _conf().get("estilo", "vaultboy") not in ("vaultboy", "avatar"):
@@ -323,6 +334,7 @@ def iniciar(cfg):
 
 def estado(nombre):
     anterior, _s["estado"] = _s["estado"], nombre
+    _avisar("estado", estado=nombre)
     if nombre in ("escuchando", "pensando"):
         # orden nueva: se deja de mostrar lo de la anterior
         _vista.update(accion=None, completado_pendiente=False, completado_hasta=0.0)
@@ -352,6 +364,8 @@ def modo_expositor(activo):
 
 def oido(texto):
     """Muestra en pequeño lo que Jarvis entendió (el público ve qué se le pidió)."""
+    if texto:
+        _avisar("oido", texto=texto)
     if not _subtitulos_on() or not texto:
         return
 
@@ -368,6 +382,8 @@ def oido(texto):
 
 
 def subtitulo(texto):
+    if texto:
+        _avisar("dice", texto=texto)
     if not _subtitulos_on() or not texto:
         return
 
@@ -680,6 +696,7 @@ def accion(categoria, segundos=None, completado=False):
     al terminar sale el pulgar arriba. Después vuelve al modo libre."""
     if not categoria:
         return
+    _avisar("accion", categoria=categoria)
     _vista.update(accion=categoria, hasta=time.time() + (segundos or 5),
                   completado_pendiente=bool(completado), completado_hasta=0.0)
     _vista["clave"] = None  # aunque se repita la categoría, que vuelva a sortear la variante

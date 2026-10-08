@@ -755,7 +755,9 @@ class Locucion:
                     for i in range(0, len(pcm), TROZO):
                         if self._cortada():
                             break
-                        stream.write(pcm[i:i + TROZO].reshape(-1, 1))
+                        pedazo = pcm[i:i + TROZO]
+                        _avisar_volumen(pedazo)
+                        stream.write(pedazo.reshape(-1, 1))
                     self.dijo_algo = True
                 if clip.error and not empezo:
                     print(f"[No pude decir: '{clip.frase[:60]}' ({clip.error})]")
@@ -780,6 +782,30 @@ class Locucion:
             fn(*args)
         except Exception as e:
             print(f"[Error en aviso de voz: {e}]")
+
+
+AL_SONAR = None   # fn(niveles 0-1, paso en s): lo que va a sonar (el orbe de la app)
+PASO_VOLUMEN = 0.025
+
+
+def niveles_de_voz(pcm, paso=PASO_VOLUMEN):
+    """Volumen (0-1) de cada pedazo de 'paso' segundos de un audio int16 a TASA."""
+    n = max(1, int(TASA * paso))
+    x = np.asarray(pcm, dtype=np.float32).reshape(-1)
+    cortes = len(x) // n
+    if cortes == 0:
+        return []
+    rms = np.sqrt(np.mean(x[:cortes * n].reshape(cortes, n) ** 2, axis=1))
+    return [round(float(v), 3) for v in np.clip((rms - 250) / 4500, 0, 1) ** 0.7]
+
+
+def _avisar_volumen(pcm):
+    if AL_SONAR is None:
+        return
+    try:
+        AL_SONAR(niveles_de_voz(pcm), PASO_VOLUMEN)
+    except Exception:
+        pass
 
 
 def detener():

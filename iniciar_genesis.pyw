@@ -86,6 +86,12 @@ def _ver_registro(_icono, _item):
     os.startfile(LOG)
 
 
+def _abrir_app(_icono, _item):
+    """La app de escritorio (personalidades, avatares, voz y el orbe)."""
+    import subprocess
+    subprocess.Popen([sys.executable, str(BASE / "jarvis_app.pyw")], cwd=str(BASE))
+
+
 def _salir(icono, _item):
     try:
         DETENIDO.parent.mkdir(exist_ok=True)
@@ -99,6 +105,7 @@ def _salir(icono, _item):
 icono = pystray.Icon(
     "genesis", _imagen(AZUL), NOMBRE,
     pystray.Menu(
+        pystray.MenuItem("Abrir la app", _abrir_app),
         pystray.MenuItem("Escribir una orden", _escribir_orden, default=True),
         pystray.MenuItem("Modo expositor", _alternar_expositor,
                          checked=lambda _i: expositor.ACTIVO),

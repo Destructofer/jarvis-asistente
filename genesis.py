@@ -27,6 +27,7 @@ import bitacora  # lo que Jarvis de verdad hizo (para no afirmar lo que no hizo)
 import juegos  # Jarvis aprieta botones de verdad en el juego (control virtual de Xbox o teclado)
 import para_mi  # red neuronal local: ¿lo que se dijo sin llamarlo era para Jarvis?
 import remoto  # órdenes desde tu teléfono, por Supabase
+import app_servidor  # la app de escritorio de Jarvis (personalidades, avatares, voz, el orbe)
 import whatsapp_chat  # escribirle y llamarle a tus contactos de WhatsApp (siempre con tu confirmación)
 import habitos  # aprende tus rutinas (música al trabajar, apps a cierta hora) y te las ofrece
 import ciclo  # el día y la noche: resumen de la mañana y avisos de noche
@@ -1271,7 +1272,7 @@ def confirmar(cfg, pregunta):
     """Pide confirmación. Si la respuesta es no (o no hubo respuesta), queda anotado: el modelo
     no debe volver a pedir lo mismo en esta orden (antes repetía la misma pregunta hasta 8
     veces y cada una se tragaba lo siguiente que decías)."""
-    if _remota_actual["orden"] is not None:
+    if _desde_el_telefono():
         # desde el teléfono no se confirma nada (enviar mensajes, apagar, borrar...)
         _remota_actual["bloqueada"] = _remota_actual["bloqueada"] or "algo que pide confirmación"
         _confirmacion["negada"] = True
@@ -1352,7 +1353,7 @@ def ejecutar_herramienta(cfg, nombre, args):
     if not skills.disponible(nombre):
         return skills.Fallo("Esa función no está disponible ahora (faltan credenciales o conexión).")
     if skills.riesgo(nombre) == "confirmar":
-        if _remota_actual["orden"] is not None:
+        if _desde_el_telefono():
             _remota_actual["bloqueada"] = nombre
             return skills.Fallo("NO SE HIZO: por seguridad, desde el teléfono no hago nada que pida "
                                 "confirmación. Dile eso al usuario tal cual.")
@@ -1903,12 +1904,20 @@ def _conectar_ojos(cfg):
     presencia.iniciar()
 
 
+def _desde_el_telefono():
+    """¿La orden que se atiende vino del teléfono? (las de la app son tuyas en la PC)"""
+    o = _remota_actual["orden"]
+    return o is not None and o.get("origen") != "app"
+
+
 def _atender_remota(cfg, history, orden, interruptor):
-    """Una orden del teléfono: se procesa como una escrita, sin voz en la PC (tal vez no estás
-    ahí; remoto.hablar_en_pc la activa) y la respuesta regresa al teléfono."""
-    print(f"Tú (desde el teléfono): {orden['texto']}")
-    cfg_remota = dict(cfg, voz_activa=bool((cfg.get("remoto") or {}).get("hablar_en_pc", False))
-                      and cfg.get("voz_activa", True))
+    """Una orden del teléfono o de la app: se procesa como una escrita y la respuesta regresa
+    a quien la mandó. Las del teléfono no suenan en la PC (tal vez no estás ahí;
+    remoto.hablar_en_pc lo cambia); las de la app sí."""
+    de_la_app = orden.get("origen") == "app"
+    print(f"Tú (desde {'la app' if de_la_app else 'el teléfono'}): {orden['texto']}")
+    hablar_aqui = orden.get("hablar") if de_la_app else (cfg.get("remoto") or {}).get("hablar_en_pc", False)
+    cfg_remota = dict(cfg, voz_activa=bool(hablar_aqui) and cfg.get("voz_activa", True))
     _remota_actual.update(orden=orden, textos=[], bloqueada=None)
     ok = True
     try:
@@ -1923,7 +1932,10 @@ def _atender_remota(cfg, history, orden, interruptor):
             textos = [f"Por seguridad no lo hice: desde el teléfono no hago nada que pida confirmación "
                       f"({_remota_actual['bloqueada'].replace('_', ' ')}). Eso hazlo en la computadora."]
         _remota_actual.update(orden=None, textos=[], bloqueada=None)
-        remoto.responder(orden["id"], " ".join(textos) or "Hecho.", ok)
+        if orden.get("responder"):
+            orden["responder"](" ".join(textos) or "Hecho.", ok)
+        else:
+            remoto.responder(orden["id"], " ".join(textos) or "Hecho.", ok)
         hud.estado("inactivo")
 
 
@@ -2103,6 +2115,15 @@ def main(persistente=False):
     para_mi.hablar = lambda texto: avisar(cfg, texto)
     escuchar.AL_FALTAR_MEMORIA = lambda texto: avisar(cfg, texto)
     remoto.hablar = lambda texto: avisar(cfg, texto)
+    app_servidor.hablar = lambda texto: decir(cfg, texto)
+    app_servidor.entregar = lambda orden: (_remotas.put(orden), escuchar.CONVERSAR.set())
+    if app_servidor.publicar not in hud.OBSERVADORES:
+        hud.OBSERVADORES.append(app_servidor.publicar)
+    voz.AL_SONAR = app_servidor.al_sonar
+    try:
+        app_servidor.iniciar(cfg)
+    except Exception as e:
+        print(f"[App: no pude arrancar su servidor ({type(e).__name__}: {e})]")
     whatsapp_chat.configurar(cfg)
     whatsapp_chat.confirmar = lambda pregunta: confirmar(cfg, pregunta)
     whatsapp_chat.hablar = lambda texto: avisar(cfg, texto)

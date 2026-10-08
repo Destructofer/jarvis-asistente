@@ -296,6 +296,9 @@
   "para_mi": {
     "callarse": 0.05
   },
+  "app": {
+    "puerto": 8766
+  },
   "remoto": {
     "activo": true,
     "cada_seg": 2,
