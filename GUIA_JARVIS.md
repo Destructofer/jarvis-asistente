@@ -571,6 +571,31 @@ de 2 capas entrenada con **tus** frases.
 - **Sin internet**, si la red está 97% segura de que era para él, contesta el modelo local en
   vez de callarse (hoy todavía no llega a ese nivel; con correcciones puede).
 
+## Mantenimiento automático del equipo (`mantenimiento.py`)
+
+Jarvis cuida el rendimiento **solo y en silencio** (sin ventanas ni avisos), cada 10 minutos
+(`mantenimiento_intervalo_min`):
+
+- **Limpieza** (cada 6 h, o antes si los temporales crecen): temporales con más de 2 días sin
+  usarse (tu usuario y Windows), su propia caché de voz si pasa de 300 MB, y volcados/reportes de
+  fallos de Windows con más de 7 días.
+- **Memoria:** con la RAM arriba del 80%, primero suelta lo suyo (los modelos que viven en la RAM)
+  y luego **recorta la memoria de los procesos que llevan rato sin hacer nada** y no están al
+  frente (por ejemplo, las pestañas de fondo del navegador). Es seguro: si los vuelves a usar,
+  Windows les regresa su memoria. Probado en esta PC: la RAM pasó de 94% a 78%.
+- **Procesador:** a un programa de **fondo** que se come más del 25% del CPU le baja la prioridad
+  para que no te alente lo que tienes al frente, y se la regresa cuando se calma (y al cerrar Jarvis).
+
+**Nunca solo:** cerrar programas (perderías lo no guardado), vaciar la papelera (son tus archivos;
+"vacía la papelera" lo hace confirmando) ni tocar Windows, el antivirus, la música, las llamadas,
+el editor de código, Jarvis u Ollama. Si quieres que cierre algún programa cuando esté abierto
+sin usarse y sin ventanas, ponlo en `mantenimiento_cerrar_inactivos` (por ejemplo `["steamwebhelper"]`).
+
+"¿Por qué va lenta la compu?" / "optimiza la computadora" hace una vuelta completa al momento y te
+dice qué hizo; "¿qué has limpiado?" cuenta lo de las últimas 24 h (queda en
+`datos/mantenimiento.json`). En la app, Ajustes trae los interruptores del mantenimiento y de los
+procesos. Durante una exposición no se hace nada.
+
 ## Jarvis juega (`juegos.py`) y nunca dice que hizo lo que no hizo (`bitacora.py`)
 
 **Botones de verdad.** Jarvis aprieta botones en el juego que está al frente con un **control

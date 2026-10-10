@@ -457,6 +457,8 @@ const AJUSTES = [
   ["interrumpir_con_voz", "Poder interrumpirlo hablando", "bool", "Aplica al reiniciar Jarvis"],
   ["presencia.saludar", "Saludarte cuando te ve llegar", "bool"],
   ["habitos.activo", "Aprender tus hábitos y sugerirte cosas", "bool"],
+  ["mantenimiento_activo", "Mantenimiento automático del equipo", "bool", "Borra temporales y cachés viejos, sin avisos"],
+  ["mantenimiento_procesos", "Regular procesos que no se usan", "bool", "Recorta su memoria y baja la prioridad de lo que alenta de fondo; nunca cierra nada"],
   ["hud.activo", "Mostrar el personaje en la esquina", "bool", "Aplica al reiniciar Jarvis"],
   ["hud.estilo", "Estilo de la esquina", [["vaultboy", "Avatar animado"], ["reactor", "Reactor"]]],
   ["hud.subtitulos", "Subtítulos de lo que dice", [["siempre", "Siempre"], ["expositor", "Solo al exponer"], ["nunca", "Nunca"]]],

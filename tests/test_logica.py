@@ -2723,3 +2723,63 @@ class AppDeEscritorio(unittest.TestCase):
             self.assertFalse(genesis._desde_el_telefono())   # la app sí puede pedir confirmación
         finally:
             genesis._remota_actual.update(orden=None)
+
+
+class MantenimientoAutomatico(unittest.TestCase):
+    """mantenimiento.py: lo hace solo y en silencio, sin cerrar nada ni tocar lo intocable."""
+
+    def test_limpia_cache_de_voz_y_reportes_viejos(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            cache = base / "voz"
+            cache.mkdir()
+            for i in range(5):
+                f = cache / f"{i}.pcm"
+                f.write_bytes(b"x" * 1000)
+                os.utime(f, (time.time() - (10 - i) * 60,) * 2)
+            orig = mantenimiento.VOZ_CACHE
+            mantenimiento.VOZ_CACHE = cache
+            try:
+                liberado = mantenimiento._recortar_cache_voz(maximo_mb=0.004, objetivo_mb=0.002)
+            finally:
+                mantenimiento.VOZ_CACHE = orig
+            self.assertEqual(liberado, 3000)                       # las 3 más viejas
+            self.assertEqual(sorted(f.name for f in cache.iterdir()), ["3.pcm", "4.pcm"])
+            dumps = base / "CrashDumps"
+            dumps.mkdir()
+            viejo, nuevo = dumps / "a.dmp", dumps / "b.dmp"
+            viejo.write_bytes(b"x" * 10)
+            nuevo.write_bytes(b"x" * 10)
+            os.utime(viejo, (time.time() - 30 * 86400,) * 2)
+            self.assertEqual(mantenimiento._borrar_viejos([dumps]), 10)
+            self.assertTrue(nuevo.exists())
+
+    def test_regula_el_procesador_y_lo_regresa(self):
+        class Proc:
+            def __init__(s, pid):
+                s.pid, s._n = pid, mantenimiento.psutil.NORMAL_PRIORITY_CLASS
+
+            def nice(s, v=None):
+                if v is None:
+                    return s._n
+                s._n = v
+        p = Proc(999999)
+        mantenimiento._bajados.clear()
+        mantenimiento.regular_procesos(ram_pct=10, medidos=[(p, "minero.exe", 60, 300)])
+        self.assertEqual(p._n, mantenimiento.psutil.BELOW_NORMAL_PRIORITY_CLASS)    # de fondo y glotón: baja
+        mantenimiento.regular_procesos(ram_pct=10, medidos=[(p, "minero.exe", 1, 300)])
+        self.assertEqual(p._n, mantenimiento.psutil.NORMAL_PRIORITY_CLASS)          # ya se calmó: como estaba
+        self.assertEqual(mantenimiento._bajados, {})
+
+    def test_lo_intocable(self):
+        for n in ("spotify.exe", "Discord.exe", "pythonw.exe", "ollama.exe", "dwm.exe", "MsMpEng.exe", "explorer.exe"):
+            self.assertTrue(mantenimiento._intocable(n), n)
+        self.assertFalse(mantenimiento._intocable("opera.exe"))
+
+    def test_no_cierra_nada_si_no_se_lo_pides(self):
+        orig = dict(mantenimiento._CFG)
+        mantenimiento._CFG.clear()
+        try:
+            self.assertEqual(mantenimiento._cerrar_inactivos([(None, "opera.exe", 0, 5000)]), [])
+        finally:
+            mantenimiento._CFG.update(orig)

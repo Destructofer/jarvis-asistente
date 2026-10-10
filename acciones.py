@@ -31,7 +31,7 @@ POR_HERRAMIENTA = {
                  "listar_rutinas", "listar_microfonos", "teams_leer_pantalla", "teams_listar_clases",
                  "teams_buscar_archivos_clase", "leer_ventana", "youtube", "desplazar",
                  "teams_desplazar", "explicar_pantalla", "listar_en_pantalla", "mis_habitos",
-                 "listar_personalidades", "que_hice", "listar_combos", "estado_telefono", "whatsapp_leer_chat", "clima", "correos_importantes", "whatsapp_pendientes",
+                 "listar_personalidades", "que_hice", "listar_combos", "estado_telefono", "whatsapp_leer_chat", "mantenimiento_reciente", "clima", "correos_importantes", "whatsapp_pendientes",
                  "ver_pendientes", "resumen_del_dia", "estado_nube",
                  "que_suena"},
     "pensando": {"analizar_documento", "teams_analizar_tarea", "explicar_diapositiva",

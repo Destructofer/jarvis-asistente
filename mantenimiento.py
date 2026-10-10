@@ -1,6 +1,23 @@
-"""Detecta lo que suele hacer más lento el equipo (caché, papelera, RAM, disco) y lo arregla
-solo cuando el usuario lo pide o lo confirma en el panel emergente (panel.py); nunca actúa
-sin avisar antes."""
+"""Mantenimiento AUTOMÁTICO del equipo: Jarvis lo hace solo y en silencio (sin ventanas ni
+avisos), cada pocos minutos:
+
+- Borra temporales VIEJOS (más de 2 días sin tocarse) de tu usuario y de Windows, su propia
+  caché de voz cuando crece de más, y los volcados y reportes de fallos viejos de Windows.
+- Memoria: con la RAM alta libera la suya (los modelos que viven en la RAM) y RECORTA la
+  memoria de los procesos que llevan rato sin hacer nada y no están al frente (las pestañas
+  de fondo del navegador, por ejemplo). Es seguro: si los vuelves a usar, Windows les
+  regresa su memoria.
+- Procesador: a un programa de FONDO que se come el CPU por más de una vuelta le baja la
+  prioridad (no te alenta lo que tienes al frente) y se la regresa cuando se calma.
+
+Lo que NUNCA hace solo: cerrar programas (perderías lo no guardado; config.json →
+mantenimiento_cerrar_inactivos permite nombrar los que sí puede cerrar cuando no tienen
+ventana y llevan rato sin usarse), vaciar la papelera (son tus archivos: "vacía la papelera"
+lo pide confirmando), ni tocar Windows, el antivirus, la música, las llamadas o a Jarvis.
+
+Lo que hizo queda en datos/mantenimiento.json: "¿qué has hecho para que la compu vaya
+rápido?" lo cuenta.
+"""
 import ctypes
 import json
 import os
@@ -10,7 +27,6 @@ from pathlib import Path
 
 import psutil
 
-import panel
 from apps import bloqueado
 from skills import skill
 
@@ -27,8 +43,24 @@ TEMP_DIAS_MINIMO = 2   # solo se borran temporales con más de estos días sin t
 UMBRAL_PAPELERA_GB = 1.0
 UMBRAL_DISCO_LIBRE_GB = 15.0
 UMBRAL_RAM_PCT = 88
-COOLDOWN_AVISO_SEG = 3 * 3600      # no repetir el mismo aviso antes de 3 horas
-COOLDOWN_DISCO_SEG = 24 * 3600     # el disco lleno no se arregla solo en 3 h: una vez al día basta
+RAM_RECORTAR_PCT = 80          # desde aquí se recorta la memoria de lo que no se usa
+RECORTAR_MIN_MB = 150          # solo procesos que ocupan al menos esto
+CPU_FONDO_PCT = 25             # un programa de fondo con más CPU que esto (promedio) se baja de prioridad
+CPU_CALMADO_PCT = 5            # ... y se le regresa la prioridad cuando baja de esto
+LIMPIEZA_CADA_SEG = 6 * 3600   # temporales y cachés: cada 6 h
+CACHE_VOZ_MAX_MB = 300         # la caché de voz de Jarvis se recorta a 200 MB si pasa de esto
+VIEJOS_DIAS = 7                # volcados y reportes de fallos: con más días se borran
+VOZ_CACHE = Path(__file__).parent / "datos" / "voz_cache"
+LOCAL = Path(os.environ.get("LOCALAPPDATA", ""))
+CARPETAS_VIEJOS = [LOCAL / "CrashDumps", LOCAL / "Microsoft" / "Windows" / "WER" / "ReportArchive",
+                   LOCAL / "Microsoft" / "Windows" / "WER" / "ReportQueue"]
+# Lo que nunca se recorta ni se le baja la prioridad: música, llamadas, grabación, Jarvis y
+# sus modelos (además de lo del sistema: apps.bloqueado y NO_OFRECER)
+NO_TOCAR = {"spotify", "vlc", "wmplayer", "music.ui", "itunes", "discord", "zoom", "teams", "ms-teams",
+            "obs64", "obs", "audiodg", "python", "pythonw", "ollama", "ollama app", "llama-server",
+            "whatsapp", "whatsapp.root", "code", "explorer", "sihost", "ctfmon", "textinputhost",
+            "searchhost", "startmenuexperiencehost", "shellexperiencehost", "lockapp", "csrss",
+            "winlogon", "services", "lsass", "svchost", "smss", "wininit", "fontdrvhost", "taskmgr"}
 # Procesos que aunque usen mucha RAM no se ofrecen para cerrar: son de Windows, del antivirus
 # o del propio Genesis (dwm.exe dibuja la pantalla; cerrarlo deja todo en negro).
 NO_OFRECER = {"dwm", "memory compression", "msmpeng", "mssense", "searchindexer",
@@ -127,34 +159,6 @@ def _resumen(e):
             f"{e['temp_gb']:.1f} GB en temporales y {e['papelera_gb']:.1f} GB en la papelera.")
 
 
-def analizar():
-    """(estado, hallazgos, resumen). Cada hallazgo trae su acción lista para el panel."""
-    e = estado_equipo()
-    hallazgos = []
-    if e["temp_gb"] >= UMBRAL_TEMP_GB:
-        hallazgos.append({"clave": "temp",
-                          "texto": f"{e['temp_gb']:.1f} GB en archivos temporales",
-                          "etiqueta": f"Limpiar temporales ({e['temp_gb']:.1f} GB)",
-                          "accion": _limpiar_temporales_real})
-    if e["papelera_gb"] >= UMBRAL_PAPELERA_GB:
-        hallazgos.append({"clave": "papelera",
-                          "texto": f"{e['papelera_gb']:.1f} GB en la papelera de reciclaje",
-                          "etiqueta": f"Vaciar papelera ({e['papelera_gb']:.1f} GB)",
-                          "accion": _vaciar_papelera_real})
-    if e["disco_libre_gb"] < UMBRAL_DISCO_LIBRE_GB:
-        hallazgos.append({"clave": "disco",
-                          "texto": f"Solo quedan {e['disco_libre_gb']:.1f} GB libres en el disco",
-                          "etiqueta": "Ver qué ocupa el disco (Almacenamiento de Windows)",
-                          "accion": _abrir_almacenamiento})
-    if e["ram_pct"] >= UMBRAL_RAM_PCT and e["top_ram"]:
-        nombre, mb = e["top_ram"][0]
-        hallazgos.append({"clave": "ram",
-                          "texto": f"RAM al {e['ram_pct']:.0f}%; {nombre} está usando {mb:.0f} MB",
-                          "etiqueta": f"Cerrar {nombre} ({mb:.0f} MB)",
-                          "accion": lambda n=nombre: _cerrar_proceso_real(n)})
-    return e, hallazgos, _resumen(e)
-
-
 # ---------- Acciones reales ----------
 def _es_enlace(ruta):
     """Symlinks y "junctions" de Windows: se borra el enlace, nunca lo que hay del otro lado
@@ -214,47 +218,296 @@ def _vaciar_papelera_real():
         return f"No pude vaciar la papelera: {type(e).__name__}."
 
 
-def _cerrar_proceso_real(nombre):
-    """Cierra la app por sus ventanas (como con la X, respeta "¿guardar cambios?") en vez de
-    matar sus procesos, que perdería lo no guardado."""
-    if bloqueado(nombre) or Path(nombre).stem.lower() in NO_OFRECER:
-        return f"'{nombre}' es parte del sistema; no lo cierro."
-    import apps
-    return apps.cerrar_app(Path(nombre).stem)
+# ---------- Más limpieza segura ----------
+def _recortar_cache_voz(maximo_mb=CACHE_VOZ_MAX_MB, objetivo_mb=200):
+    """La caché de frases de Jarvis: si pasa del máximo, se borran las más viejas."""
+    if not VOZ_CACHE.is_dir():
+        return 0
+    archivos = sorted((f for f in VOZ_CACHE.rglob("*") if f.is_file()), key=lambda f: f.stat().st_atime)
+    total = sum(f.stat().st_size for f in archivos)
+    if total <= maximo_mb * 1e6:
+        return 0
+    liberado = 0
+    for f in archivos:
+        if total - liberado <= objetivo_mb * 1e6:
+            break
+        try:
+            tam = f.stat().st_size
+            f.unlink()
+            liberado += tam
+        except OSError:
+            pass
+    return liberado
 
 
-def _abrir_almacenamiento():
-    os.startfile("ms-settings:storagesense")
-    return "Abrí Almacenamiento de Windows: ahí ves qué ocupa más y puedes liberarlo."
+def _borrar_viejos(carpetas=None, dias=VIEJOS_DIAS):
+    """Volcados de memoria y reportes de fallos de Windows con más de 'dias': nadie los usa."""
+    limite = time.time() - dias * 86400
+    liberado = 0
+    for base in carpetas or CARPETAS_VIEJOS:
+        if not base.is_dir():
+            continue
+        for raiz, dirs, archivos in os.walk(base, topdown=False, followlinks=False):
+            for a in archivos:
+                f = Path(raiz) / a
+                try:
+                    if _es_enlace(f):
+                        continue
+                    st = f.stat()
+                    if st.st_mtime < limite:
+                        f.unlink()
+                        liberado += st.st_size
+                except OSError:
+                    pass
+            for d in dirs:
+                try:
+                    if not _es_enlace(Path(raiz) / d):
+                        (Path(raiz) / d).rmdir()
+                except OSError:
+                    pass
+    return liberado
 
 
-# ---------- Vigilancia en segundo plano ----------
-def _avisar_si_hace_falta(hallazgos, resumen):
-    ahora = time.time()
-    pendientes = [h for h in hallazgos
-                 if ahora - _avisados.get(h["clave"], 0) >
-                 (COOLDOWN_DISCO_SEG if h["clave"] == "disco" else COOLDOWN_AVISO_SEG)]
-    if not pendientes:
-        return
-    for h in pendientes:
-        _avisados[h["clave"]] = ahora
-    _guardar_avisados()
-    if _mostrar_panel(pendientes, resumen) and _notificar:
-        _notificar("Revisé el equipo y encontré algo que podría estar ralentizándolo. "
-                   "Te dejo las opciones en pantalla.")
-    elif _notificar:
-        _notificar("Revisé el equipo: " + resumen)
+# ---------- Procesos ----------
+_vistos = {}       # pid -> psutil.Process (para medir su CPU entre una vuelta y otra)
+_bajados = {}      # pid -> (nombre, prioridad original): los que se bajaron de prioridad
+_ultima_vuelta = {"t": 0.0}
 
 
-def _mostrar_panel(hallazgos, resumen):
-    """Devuelve True si de verdad abrió el panel (solo tiene sentido si hay al menos una
-    acción con botón; un hallazgo como "poco disco libre" es informativo y no abre nada)."""
-    opciones = [{"etiqueta": h["etiqueta"], "accion": h["accion"]}
-               for h in hallazgos if h["accion"]]
-    if not opciones:
+def _pid_al_frente():
+    try:
+        import win32gui
+        import win32process
+        return win32process.GetWindowThreadProcessId(win32gui.GetForegroundWindow())[1]
+    except Exception:
+        return None
+
+
+def _intocable(nombre):
+    base = Path(nombre or "").stem.lower()
+    return not nombre or bloqueado(nombre) or base in NO_OFRECER or base in NO_TOCAR
+
+
+def _protegidos():
+    """Jarvis y sus hijos, y la app que tienes al frente con toda su familia de procesos."""
+    pids = set()
+    for raiz in (os.getpid(), _pid_al_frente()):
+        if not raiz:
+            continue
+        try:
+            p = psutil.Process(raiz)
+            pids.add(p.pid)
+            pids.update(h.pid for h in p.children(recursive=True))
+            if raiz != os.getpid():   # el navegador al frente: todos sus procesos hermanos también
+                nombre = p.name()
+                pids.update(q.pid for q in psutil.process_iter(["name"]) if q.info["name"] == nombre)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return pids
+
+
+def medir_procesos():
+    """[(proceso, nombre, cpu % promedio desde la vuelta anterior, MB)] de lo que se puede tocar."""
+    protegidos = _protegidos()
+    salida, vivos = [], set()
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            nombre = p.info["name"] or ""
+            if p.pid in protegidos or _intocable(nombre):
+                continue
+            vivos.add(p.pid)
+            viejo = _vistos.get(p.pid)
+            if viejo is None:
+                _vistos[p.pid] = p
+                p.cpu_percent(None)   # primera medición: el promedio sale en la próxima vuelta
+                continue
+            cpu = viejo.cpu_percent(None) / (psutil.cpu_count() or 1)
+            salida.append((viejo, nombre, cpu, p.info["memory_info"].rss / 1e6))
+        except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError):
+            continue
+    for pid in list(_vistos):
+        if pid not in vivos:
+            _vistos.pop(pid, None)
+            _bajados.pop(pid, None)
+    return salida
+
+
+def _recortar(proceso):
+    """EmptyWorkingSet: Windows saca de la RAM las páginas que el proceso no está usando."""
+    k = ctypes.windll.kernel32
+    h = k.OpenProcess(0x0400 | 0x0100, False, proceso.pid)   # QUERY_INFORMATION | SET_QUOTA
+    if not h:
         return False
-    panel.mostrar("Jarvis · Mantenimiento", resumen, opciones)
-    return True
+    try:
+        return bool(ctypes.windll.psapi.EmptyWorkingSet(h))
+    finally:
+        k.CloseHandle(h)
+
+
+def regular_procesos(ram_pct=None, medidos=None):
+    """Recorta la memoria de lo inactivo (con la RAM alta) y regula la prioridad de lo que se
+    come el CPU de fondo. Devuelve las frases de lo que hizo."""
+    ram_pct = psutil.virtual_memory().percent if ram_pct is None else ram_pct
+    medidos = medir_procesos() if medidos is None else medidos
+    hecho = []
+    if ram_pct >= RAM_RECORTAR_PCT:
+        libre_antes = psutil.virtual_memory().available
+        recortados = {}
+        for proc, nombre, cpu, mb in medidos:
+            if cpu < 1 and mb >= RECORTAR_MIN_MB:
+                try:
+                    if _recortar(proc):
+                        recortados[nombre] = recortados.get(nombre, 0) + 1
+                except Exception:
+                    pass
+        if recortados:
+            time.sleep(1.5)
+            # lo que de verdad quedó libre (la suma de lo que soltó cada proceso exagera: parte
+            # se queda en la memoria comprimida o de reserva de Windows)
+            libres = max(0, psutil.virtual_memory().available - libre_antes) / 1e6
+            if libres >= 50:
+                apps = ", ".join(Path(n).stem for n in list(recortados)[:4])
+                hecho.append(f"Liberé {libres / 1000:.1f} GB de RAM de lo que no estabas usando ({apps}).")
+    for proc, nombre, cpu, mb in medidos:
+        try:
+            if proc.pid not in _bajados and cpu >= CPU_FONDO_PCT:
+                original = proc.nice()
+                if original in (psutil.NORMAL_PRIORITY_CLASS, psutil.ABOVE_NORMAL_PRIORITY_CLASS):
+                    proc.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+                    _bajados[proc.pid] = (nombre, original)
+                    hecho.append(f"Bajé la prioridad de {Path(nombre).stem} (usaba {cpu:.0f}% del procesador en segundo plano).")
+            elif proc.pid in _bajados and cpu < CPU_CALMADO_PCT:
+                proc.nice(_bajados.pop(proc.pid)[1])   # ya se calmó: como estaba
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            _bajados.pop(proc.pid, None)
+    return hecho
+
+
+def restaurar_prioridades():
+    """Al cerrar Jarvis: todos los procesos vuelven a su prioridad original."""
+    for pid, (_, original) in list(_bajados.items()):
+        try:
+            psutil.Process(pid).nice(original)
+        except Exception:
+            pass
+        _bajados.pop(pid, None)
+
+
+def _pids_con_ventana():
+    """Los procesos que tienen alguna ventana visible (ahí podría haber algo sin guardar)."""
+    import win32gui
+    import win32process
+    pids = set()
+
+    def cada(h, _):
+        try:
+            if win32gui.IsWindowVisible(h) and win32gui.GetWindowText(h):
+                pids.add(win32process.GetWindowThreadProcessId(h)[1])
+        except Exception:
+            pass
+        return True
+    win32gui.EnumWindows(cada, None)
+    return pids
+
+
+def _cerrar_inactivos(medidos):
+    """Solo los que TÚ pusiste en config.json → mantenimiento_cerrar_inactivos, y solo si no
+    tienen ventana ni usan el procesador (no hay nada que guardar)."""
+    permitidos = {Path(n).stem.lower() for n in (_CFG.get("mantenimiento_cerrar_inactivos") or [])}
+    if not permitidos:
+        return []
+    hecho = []
+    con_ventana = _pids_con_ventana()
+    for nombre in {n for _, n, cpu, _ in medidos if Path(n).stem.lower() in permitidos}:
+        familia = [(p, c) for p, n, c, _ in medidos if n == nombre]
+        if any(c >= 1 for _, c in familia) or any(p.pid in con_ventana for p, _ in familia):
+            continue
+        for p, _ in familia:
+            try:
+                p.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        hecho.append(f"Cerré {Path(nombre).stem}, que estaba abierto sin usarse.")
+    return hecho
+
+
+# ---------- El mantenimiento automático ----------
+def _historial():
+    d = _cargar_avisados()
+    return d.get("historial", []), d
+
+
+def _anotar(acciones):
+    if not acciones:
+        return
+    historial, d = _historial()
+    historial.append({"ts": time.time(), "acciones": acciones})
+    d["historial"] = historial[-60:]
+    try:
+        AVISADOS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        AVISADOS_PATH.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    for a in acciones:
+        print(f"[Mantenimiento: {a}]")
+
+
+def limpiar_ahora():
+    """Temporales viejos, la caché de voz y los reportes de fallos viejos. Frases de lo hecho."""
+    hecho = []
+    texto = _limpiar_temporales_real()
+    try:
+        gb = float(texto.split("Liberé ")[1].split(" GB")[0])
+    except (IndexError, ValueError):
+        gb = 0
+    if gb >= 0.01:
+        hecho.append(f"Borré {gb:.2f} GB de archivos temporales viejos.")
+    voz = _recortar_cache_voz()
+    if voz >= 1e6:
+        hecho.append(f"Recorté {voz / 1e6:.0f} MB de mi caché de voz.")
+    viejos = _borrar_viejos()
+    if viejos >= 1e6:
+        hecho.append(f"Borré {viejos / 1e6:.0f} MB de reportes de fallos viejos de Windows.")
+    _avisados["limpieza"] = time.time()
+    return hecho
+
+
+def una_vuelta(forzar_limpieza=False):
+    """Lo que hace cada vuelta: limpieza (cada 6 h, o si los temporales crecieron), memoria y
+    procesador. Devuelve las frases de lo que hizo (también quedan anotadas)."""
+    hecho = []
+    ahora = time.time()
+    if forzar_limpieza or ahora - _avisados.get("limpieza", 0) >= LIMPIEZA_CADA_SEG \
+            or tamano_temporales_gb() >= UMBRAL_TEMP_GB:
+        hecho += limpiar_ahora()
+    ram = psutil.virtual_memory().percent
+    if ram >= RAM_RECORTAR_PCT:
+        try:   # lo primero: lo que Jarvis mismo tiene en la RAM (los modelos en CPU)
+            import escuchar
+            escuchar.liberar_memoria()
+        except Exception:
+            pass
+    medidos = medir_procesos()
+    if _CFG.get("mantenimiento_procesos", True):
+        hecho += regular_procesos(ram, medidos)
+        hecho += _cerrar_inactivos(medidos)
+    _anotar(hecho)
+    _guardar_avisados()
+    return hecho
+
+
+def _vigilar():
+    intervalo = _CFG.get("mantenimiento_intervalo_min", 10) * 60
+    time.sleep(120)  # deja que Jarvis termine de arrancar antes de la primera revisión
+    medir_procesos()  # primera medición del CPU (el promedio sale en la siguiente vuelta)
+    while True:
+        time.sleep(intervalo)
+        try:
+            # En plena exposición NO: que nada cambie de prioridad ni se mueva frente al jurado
+            if _CFG.get("mantenimiento_activo", True) and not _exponiendo():
+                una_vuelta()
+        except Exception as e:
+            print(f"[Error en mantenimiento: {type(e).__name__}: {str(e)[:120]}]")
 
 
 def _exponiendo():
@@ -264,50 +517,57 @@ def _exponiendo():
         return False
 
 
-def _vigilar():
-    intervalo = _CFG.get("mantenimiento_intervalo_min", 30) * 60
-    time.sleep(120)  # deja que Jarvis termine de arrancar antes de la primera revisión
-    while True:
-        try:
-            # En plena exposición NO: un panel encima de la presentación y un "revisé el
-            # equipo" por las bocinas frente al jurado es lo último que se quiere.
-            if _CFG.get("mantenimiento_activo", True) and not _exponiendo():
-                _, hallazgos, resumen = analizar()
-                _avisar_si_hace_falta(hallazgos, resumen)
-        except Exception as e:
-            print(f"[Error en mantenimiento: {type(e).__name__}: {str(e)[:120]}]")
-        time.sleep(intervalo)
-
-
-def iniciar(cfg, notificar, ocupado=None):
+def iniciar(cfg, notificar=None, ocupado=None):
     """Se puede llamar varias veces (iniciar_genesis.pyw reinicia main() si algo falla): el
-    hilo de vigilancia es uno solo. Antes cada reinicio sumaba otro y los avisos se repetían."""
+    hilo de vigilancia es uno solo."""
     global _CFG, _notificar, _ocupado, _hilo
     _CFG = cfg
     _notificar = notificar
     _ocupado = ocupado
     if cfg.get("mantenimiento_activo", True) and (_hilo is None or not _hilo.is_alive()):
+        import atexit
+        atexit.register(restaurar_prioridades)
         _hilo = threading.Thread(target=_vigilar, daemon=True, name="mantenimiento")
         _hilo.start()
 
 
 # ---------- Skills ----------
 @skill("revisar_equipo",
-       "Analiza el estado del equipo (CPU, RAM, disco, archivos temporales, papelera) y "
-       "muestra un panel con las soluciones disponibles como botones. Úsala cuando el "
-       "usuario pregunte por qué va lento, pida revisar o diagnosticar el equipo, o quiera "
-       "liberar espacio.", terminal=False)
+       "Revisa el equipo (CPU, RAM, disco, temporales, papelera) y le da mantenimiento AHORA "
+       "mismo: borra temporales viejos y cachés, libera la memoria de lo que no se usa y regula "
+       "lo que se come el procesador de fondo. Úsala cuando pregunten por qué va lenta la "
+       "computadora o pidan acelerarla, limpiarla u optimizarla.", terminal=True)
 def revisar_equipo():
-    _, hallazgos, resumen = analizar()
-    if not hallazgos:
-        return resumen + " No encontré nada que valga la pena arreglar ahora mismo."
-    if _mostrar_panel(hallazgos, resumen):
-        return resumen + " Te dejé las opciones para arreglarlo en un panel en pantalla."
-    return resumen  # hallazgos solo informativos (p. ej. poco disco libre): no hay botón que mostrar
+    hecho = una_vuelta(forzar_limpieza=True)
+    e = estado_equipo()
+    texto = " ".join(hecho) if hecho else "No encontré nada que limpiar ni procesos que regular."
+    texto += f" Ahora: {_resumen(e)}"
+    if e["disco_libre_gb"] < UMBRAL_DISCO_LIBRE_GB:
+        texto += (" Te quedan pocos gigas libres; lo que más ocupa lo ves en Configuración, "
+                  "Almacenamiento.")
+    if e["papelera_gb"] >= UMBRAL_PAPELERA_GB:
+        texto += f" Tienes {e['papelera_gb']:.1f} GB en la papelera; si quieres, dime que la vacíe."
+    if e["ram_pct"] >= UMBRAL_RAM_PCT and e["top_ram"]:
+        nombre, mb = e["top_ram"][0]
+        texto += f" {Path(nombre).stem} usa {mb / 1000:.1f} GB de RAM; cerrarle pestañas o ventanas ayudaría."
+    return texto
+
+
+@skill("mantenimiento_reciente",
+       "Cuenta lo que Jarvis hizo solo para que la computadora vaya rápido (temporales borrados, "
+       "memoria liberada, procesos regulados): '¿qué has limpiado?', '¿qué hiciste para que la "
+       "compu vaya rápido?'.", terminal=True)
+def mantenimiento_reciente(horas=24):
+    historial, _ = _historial()
+    limite = time.time() - float(horas or 24) * 3600
+    recientes = [a for h in historial if h["ts"] >= limite for a in h["acciones"]]
+    if not recientes:
+        return "En las últimas 24 horas no hizo falta limpiar ni regular nada."
+    return f"En las últimas 24 horas hice {len(recientes)} cosas. Lo más reciente: " + " ".join(recientes[-4:])
 
 
 # Por voz piden confirmación (una orden mal oída o un texto leído de Teams no deben poder
-# borrar nada); desde el panel no, porque pulsar el botón ya es la confirmación.
+# borrar nada).
 @skill("limpiar_temporales",
        "Borra los archivos temporales del sistema para liberar espacio y ayudar a que el "
        "equipo vaya más fluido.",
@@ -324,7 +584,5 @@ def vaciar_papelera():
 
 
 if __name__ == "__main__":
-    e, hallazgos, resumen = analizar()
-    print(resumen)
-    for h in hallazgos:
-        print(" -", h["texto"])
+    print(_resumen(estado_equipo()))
+    print("Lo que haría ahora:", una_vuelta() or "nada")

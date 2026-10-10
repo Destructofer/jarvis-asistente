@@ -54,6 +54,7 @@ AJUSTES = {
     "hud.activo": bool, "hud.estilo": ("vaultboy", "reactor"), "hud.subtitulos": ("siempre", "expositor", "nunca"),
     "hud.tamano": int, "remoto.hablar_en_pc": bool, "para_mi.callarse": float,
     "presencia.saludar": bool, "habitos.activo": bool,
+    "mantenimiento_activo": bool, "mantenimiento_procesos": bool,
 }
 
 
@@ -292,7 +293,7 @@ def probar_voz(texto, prueba=None):
 POR_OMISION = {"voz_activa": True, "palabra_activacion": True, "interrumpir_con_voz": True, "hud.activo": True,
                "hud.estilo": "vaultboy", "hud.subtitulos": "expositor", "hud.tamano": 150,
                "remoto.hablar_en_pc": False, "para_mi.callarse": 0.05, "presencia.saludar": True,
-               "habitos.activo": True}
+               "habitos.activo": True, "mantenimiento_activo": True, "mantenimiento_procesos": True}
 
 
 def ajustes():

@@ -372,9 +372,10 @@ GRUPOS = [
     # son tus compañeros; antes "muéstrales el sistema" metía también apagar/reiniciar/Wi-Fi
     # (38 herramientas en la petición, ~2.800 tokens solo de descripciones).
     (r"apaga|reinicia|wifi|bloquea|bateria|cpu|\bram\b|microfono|limpia|temporal|papelera|"
-     r"captura|pantallazo|carpeta|cierra|lento|estado del (?:sistema|equipo)|computadora|compu\b",
+     r"captura|pantallazo|carpeta|cierra|lento|lenta|rapid|optimiza|acelera|memoria|procesos|"
+     r"estado del (?:sistema|equipo)|computadora|compu\b",
      ["apagar_equipo", "reiniciar_equipo", "cancelar_apagado", "wifi", "bloquear_pantalla",
-      "info_sistema", "listar_microfonos", "cambiar_microfono", "revisar_equipo",
+      "info_sistema", "listar_microfonos", "cambiar_microfono", "revisar_equipo", "mantenimiento_reciente",
       "limpiar_temporales", "vaciar_papelera", "captura_pantalla", "abrir_carpeta", "cerrar_app"]),
     (r"archivo|documento|busca|pdf|excel|word|foto|imagen|descarga|zip|rar|7z|comprimid|"
      r"descomprim|extrae|resum|analiz|puntos|ideas|idea general|de que trata|informe|reporte|"

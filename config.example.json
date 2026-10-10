@@ -185,7 +185,9 @@
     "modo_realidad": true
   },
   "mantenimiento_activo": true,
-  "mantenimiento_intervalo_min": 30,
+  "mantenimiento_intervalo_min": 10,
+  "mantenimiento_procesos": true,
+  "mantenimiento_cerrar_inactivos": [],
   "apps": {
     "opera gx": "%LOCALAPPDATA%\\Programs\\Opera GX\\opera.exe",
     "visual studio code": "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe"
