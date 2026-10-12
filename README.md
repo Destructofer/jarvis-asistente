@@ -10,15 +10,15 @@
 > `conocimiento/` (lo que sabe del proyecto), `configuracion.py` (guardado atómico de
 > config.json), `tests/` (pruebas sin micrófono ni internet). También: `documentos.py`
 > (descomprimir, leer, resumir y guardar documentos), `entorno.py` (escanear el entorno y vigilar
-> con la cámara), `realidad.py` (modo realidad aumentada con las manos), `acciones.py` +
+> con la cámara), `acciones.py` +
 > `avatares.py` (el personaje animado del HUD según la acción; GIF en Documentos\Jarvis\Avatares) y `descargas.py` (el HUD muestra las descargas), `cognicion.py`
 > (cuánto y cómo pensar, calcular y fechas exactas, aprender del usuario) y `preferencias.py`
 > (navegador, música y apps preferidas, e instrucciones permanentes) e `interaccion.py` (elegir
 > lo que se ve en pantalla, controlar el video o la música, saltar anuncios, escribir en campos), `personalidades.py`
 > (mirrey, godín, abuelita, coach... la elegida se recuerda) y `habitos.py` (aprende tus rutinas
 > y te ofrece lo que sueles hacer), `ciclo.py` + `clima.py` + `correo.py` + `whatsapp.py` +
-> `cansancio.py` (resumen de la mañana con clima, pendientes, WhatsApp y Gmail; avisos de noche), `semantica.py` +
-> `nube.py` + `respaldo.py` + `supabase/esquema.sql` (memoria por significado y respaldos cifrados en Supabase).
+> `cansancio.py` (resumen de la mañana con clima, pendientes, WhatsApp y Gmail; avisos de noche), `semantica.py`
+> (memoria por significado, local).
 
 # Genesis
 

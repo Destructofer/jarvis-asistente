@@ -37,7 +37,7 @@ DIAS_MEMORIA = 30
 ENTRE_SUGERENCIAS = 30 * 60
 ESPERA_RESPUESTA = 45
 # Lo que se aprende como rutina (lo demás que le pides no se cuenta)
-RUTINABLES = {"abrir_app", "youtube", "spotify", "abrir_web", "abrir_carpeta", "modo_realidad",
+RUTINABLES = {"abrir_app", "youtube", "spotify", "abrir_web", "abrir_carpeta",
               "abrir_presentacion", "abrir_archivo"}
 NAVEGADORES = {"chrome.exe", "msedge.exe", "opera.exe", "opera_gx.exe", "brave.exe", "firefox.exe",
                "vivaldi.exe"}
@@ -158,7 +158,7 @@ def guardar_obs(o):
 def _clave_accion(skill_nombre, args):
     principal = {"abrir_app": "nombre", "youtube": "consulta", "spotify": "consulta",
                  "abrir_web": "url", "abrir_carpeta": "nombre", "abrir_presentacion": "consulta",
-                 "abrir_archivo": "consulta", "modo_realidad": "activar"}.get(skill_nombre, "")
+                 "abrir_archivo": "consulta"}.get(skill_nombre, "")
     valor = skills._norm(str((args or {}).get(principal, "")))[:60]
     return f"{skill_nombre}:{valor}"
 
@@ -166,8 +166,6 @@ def _clave_accion(skill_nombre, args):
 def registrar_accion(skill_nombre, args, resultado=None):
     """Lo llama genesis.py tras cada herramienta: las rutinas que se repiten se ofrecen solas."""
     if skill_nombre not in RUTINABLES or isinstance(resultado, Fallo):
-        return
-    if skill_nombre == "modo_realidad" and str((args or {}).get("activar", True)).lower() in ("false", "0"):
         return
     try:
         import control
@@ -272,8 +270,6 @@ def describir_accion(skill_nombre, args):
         return f"entras a {str(a.get('url', 'una página')).replace('https://', '').split('/')[0]}"
     if skill_nombre == "abrir_carpeta":
         return f"abres la carpeta {a.get('nombre', '')}".strip()
-    if skill_nombre == "modo_realidad":
-        return "entras al modo realidad aumentada"
     if skill_nombre in ("abrir_presentacion", "abrir_archivo"):
         return f"abres {a.get('consulta', 'un archivo')}"
     return f"usas {skill_nombre}"

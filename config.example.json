@@ -181,8 +181,7 @@
     "analizar_documento": true,
     "crear_documento": true,
     "escanear_entorno": true,
-    "vigilar_camara": true,
-    "modo_realidad": true
+    "vigilar_camara": true
   },
   "mantenimiento_activo": true,
   "mantenimiento_intervalo_min": 30,
