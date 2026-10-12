@@ -36,16 +36,13 @@ import mantenimiento
 import memoria
 import multimedia  # noqa: F401  (registra las skills youtube y spotify)
 import observador  # observa al público en modo expositor (dudas, con quién platicas)
-import nube  # Supabase (opcional): copia de la memoria y respaldos cifrados
 import panel
 import personalidades  # mirrey, godín, abuelita... (la elegida se recuerda)
 import presencia  # Jarvis te ve: te saluda al llegar, nota cómo estás, te mira si se lo pides
 import preferencias  # navegador, música, apps preferidas e instrucciones permanentes
 import presentacion
-import realidad  # modo realidad aumentada con las manos
 import recordatorios
-import respaldo  # respaldos diarios cifrados en Supabase
-import semantica  # memoria por significado (embeddings locales + copia en Supabase)
+import semantica  # memoria por significado (embeddings locales)
 import skills
 import teams  # noqa: F401  (registra las skills de Microsoft Teams)
 import whatsapp  # noqa: F401  (los chats de WhatsApp sin responder)
@@ -131,7 +128,7 @@ def _no_es_para_mi(cfg, texto):
     t = skills._norm(texto)
     limpia = _limpia_orden(texto)
     if (limpia in SALIDAS or limpia in CIERRE or buscar_atajo(texto) or atajo_medios(texto)
-            or atajo_realidad(texto) or atajo_presentacion(texto) or atajo_sistema(texto)):
+            or atajo_presentacion(texto) or atajo_sistema(texto)):
         return ""  # "pausa", "siguiente canción", "gracias": órdenes cortas que sí son para él
     if time.time() < _pregunta_abierta["hasta"] or habitos.pendiente() is not None:
         return ""  # Jarvis acaba de preguntarte algo: "sí", "no", "va" son la respuesta
@@ -232,10 +229,6 @@ ATAJOS = {
               "como estara el clima manana", "va a llover manana"},
     "ver_pendientes": {"que tengo pendiente", "mis pendientes", "que me quedo pendiente",
                        "que quedo pendiente de ayer", "que me falta"},
-    "respaldar_ahora": {"respaldate", "haz un respaldo", "respalda ahora", "haz un respaldo ahora",
-                        "respalda todo", "guarda un respaldo"},
-    "estado_nube": {"como esta la nube", "esta conectada la nube", "cuando fue el ultimo respaldo",
-                    "estado de supabase", "esta conectado supabase"},
     "que_suena": {"que cancion es esta", "que cancion es", "que cancion suena", "que suena",
                   "que esta sonando", "como se llama esta cancion", "como se llama la cancion",
                   "que video es este", "que estoy escuchando", "que cancion esta sonando"},
@@ -384,9 +377,6 @@ GRUPOS = [
      r"miercoles|jueves|viernes|sabado|domingo|enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
      r"septiembre|octubre|noviembre|diciembre|mes que|proximo|pasado manana",
      ["calendario"]),
-    (r"realidad|aumentada|virtual|vision pro|holograma|hologra|modo ar|gafas|lentes virtuales|"
-     r"entorno virtual|mixta|sal del modo",
-     ["modo_realidad"]),
     (r"personalidad|modo |habla(?:me)? como|actua como|se tu mismo|vuelve a ser|como eres|"
      r"mirrey|godin|fresa|chavorruco|abuelita|norteno|coach|terapeuta|narrador|sarcastico|zen",
      ["cambiar_personalidad", "listar_personalidades"]),
@@ -405,8 +395,6 @@ GRUPOS = [
     (r"pendiente|me quedo|me falta|tengo que|manana tengo|anota|ya termine|tacha|resumen|ponme al dia|"
      r"como viene el dia|buenos dias",
      ["anotar_pendiente", "ver_pendientes", "completar_pendiente", "resumen_del_dia"]),
-    (r"supabase|la nube|respald|copia de seguridad|backup|restaur",
-     ["conectar_supabase", "estado_nube", "respaldar_ahora"]),
     (r"habito|rutina|costumbre|sueles|siempre hago|sugier|sugerencia|aprendiste de mi|que sabes de mi",
      ["mis_habitos", "sugerencias_habitos", "olvidar_habitos"]),
     (r"rutina|demo",
@@ -790,26 +778,6 @@ def buscar_atajo(texto):
     for nombre, frases in ATAJOS.items():
         if t in frases:
             return nombre
-    return None
-
-
-# Entre el verbo y el nombre del modo solo se aceptan artículos y "modo": así "activa el modo
-# realidad aumentada" sí, pero "abre un video sobre realidad virtual" no (esa va al modelo).
-REALIDAD = (r"(?:(?:el|la|al|del|de|modo|en)\s+){0,3}"
-            r"(?:realidad (?:aumentada|virtual|mixta)|entorno virtual|holograma|vision pro)\b")
-REALIDAD_ON = re.compile(rf"\b(?:activa|activar|abre|inicia|iniciar|enciende|entra|pon|ponme)\s+{REALIDAD}")
-REALIDAD_OFF = re.compile(rf"\b(?:desactiva|desactivar|apaga|cierra|termina|sal|salte|quita)\s+{REALIDAD}")
-
-
-def atajo_realidad(texto):
-    """Encender o apagar la realidad aumentada sin pasar por el modelo. Con el modelo, si la
-    conversación decía "activado", contestaba "ya está activo" sin revisar (aunque el modo se
-    hubiera cerrado) y había que repetir la orden varias veces."""
-    t = skills._norm(texto)
-    if REALIDAD_OFF.search(t):
-        return "modo_realidad", {"activar": False}
-    if REALIDAD_ON.search(t):
-        return "modo_realidad", {"activar": True}
     return None
 
 
@@ -1535,8 +1503,6 @@ GUIAS = {
                         "buscar un objeto, contar, leer una hoja, identificar, revisar riesgos) usa "
                         "escanear_entorno con el modo adecuado; para una pregunta rápida, mirar.",
     "vigilar_camara": "Si pide que avises cuando pase algo frente a la cámara, usa vigilar_camara.",
-    "modo_realidad": "Para el modo realidad aumentada (entorno virtual, holograma, como las gafas "
-                     "de Apple) usa modo_realidad; para salir, activar=false.",
     "calcular": "Si la respuesta depende de una cuenta, usa calcular; nunca la hagas de memoria.",
     "recordar_conversacion": "Si pregunta por algo que se habló antes y no está en esta "
                              "conversación ('¿de qué hablamos?', 'lo que te dije de...'), búscalo "
@@ -1573,12 +1539,14 @@ GUIAS = {
 
 
 def _estado_vivo():
-    """El estado REAL en este momento. Sin esto el modelo respondía "ya está activo" por lo que
-    decía la conversación, aunque el modo realidad aumentada ya se hubiera cerrado."""
-    partes = [f"modo realidad aumentada {'ACTIVO' if realidad.activo() else 'apagado'}"]
+    """El estado REAL en este momento (sin esto el modelo deducía de la conversación si algo
+    seguía activo)."""
+    partes = []
     vigia = entorno._vigia
     if vigia["hilo"] is not None and vigia["hilo"].is_alive():
         partes.append(f"vigilando con la cámara: {vigia['condicion']}")
+    if not partes:
+        return ""
     return ("\n\nEstado real del sistema ahora mismo (no lo deduzcas de la conversación; si te "
             "piden activar o abrir algo, usa la herramienta): " + "; ".join(partes) + ".")
 
@@ -1876,7 +1844,7 @@ def _procesar_turno(cfg, history, user, escrito, interruptor, seguimiento, al_pu
     reply = None
     try:
         # Atajos: órdenes simples sin pasar por el modelo
-        rapido = (atajo_presentacion(user) or atajo_sistema(user) or atajo_realidad(user)
+        rapido = (atajo_presentacion(user) or atajo_sistema(user)
                   or atajo_medios(user) or atajo_personalidad(user) or atajo_que_hice(user) or atajo_juego(user)
                   or _respuesta_a_sugerencia(user))
         if rapido:
@@ -2001,7 +1969,6 @@ def main(persistente=False):
     archivos.iniciar()   # índice de tus archivos (en segundo plano)
     mantenimiento.iniciar(cfg, lambda texto: avisar(cfg, texto), ocupado=lambda: presentando(cfg))
     avatares.iniciar()   # prepara los GIF nuevos y vigila la carpeta de avatares
-    realidad.restaurar_pendientes()  # ventanas que un mosaico dejó achicadas si Jarvis se cerró de golpe
     hud.iniciar(cfg)
     descargas.iniciar(cfg)
     interaccion.iniciar()  # omite solos los anuncios de YouTube que se pueden omitir
@@ -2015,10 +1982,8 @@ def main(persistente=False):
         intervenir(cfg, texto, publico=False)
         return True
     correo.hablar = lambda texto: avisar(cfg, texto)
-    nube.hablar = lambda texto: avisar(cfg, texto)
     para_mi.hablar = lambda texto: avisar(cfg, texto)
     semantica.iniciar()  # indexa tus conversaciones por significado (en segundo plano)
-    respaldo.iniciar()   # un respaldo cifrado al día en Supabase (si está conectado)
     presencia.antes_de_saludar = ciclo.resumen_pendiente_hoy  # el resumen de la mañana ya saluda
     ciclo.iniciar(cfg, ofrecer=ofrecer_habito,
                   libre=lambda: puede_hablar_por_su_cuenta() and not presentando(cfg)
@@ -2045,7 +2010,6 @@ def main(persistente=False):
     escuchar.AL_ACTIVAR = al_activar
     entorno.avisar = lambda texto: avisar(cfg, texto)
     entorno.hablar = lambda texto: decir(cfg, texto)
-    realidad.hablar = lambda texto: decir(cfg, texto)
 
     # Micrófono continuo: principal (config → mic_dispositivo, p. ej. "CABLE Output" con la
     # videollamada de los lentes) con respaldo automático si se queda mudo o se desconecta

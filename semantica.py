@@ -6,13 +6,10 @@ representan su significado) con un modelo abierto que corre en tu PC, en el proc
 (paraphrase-multilingual vía Ollama, ~30 ms por frase, sin internet y sin ocupar la tarjeta de
 video que usan Whisper y qwen). La búsqueda compara significados (similitud de coseno).
 
-Dónde vive:
-- En tu PC (datos/genesis.db, tabla vectores): de ahí se busca siempre, rápido y sin internet.
-- En Supabase (tabla recuerdos, con pgvector): una copia que se sube en segundo plano (nube.py),
-  para no perderla y para otras computadoras. Si en esta PC aún no hay índice, se busca allá.
+Dónde vive: en tu PC (datos/genesis.db, tabla vectores); de ahí se busca, rápido y sin internet.
 
 Privacidad: lo que olvidas ("olvida lo de...", "olvida todo", o los mensajes viejos que se
-descartan) se borra también del índice y de Supabase en la siguiente pasada (≤ 1 min).
+descartan) se borra también del índice en la siguiente pasada (≤ 1 min).
 """
 import threading
 import time
@@ -20,7 +17,6 @@ import time
 import numpy as np
 
 import memoria
-import nube
 
 MODELO = "paraphrase-multilingual"
 DIM = 768
@@ -41,7 +37,6 @@ def _q(sql, params=(), escribir=False, muchos=False):
                     "ref INTEGER NOT NULL, texto TEXT NOT NULL, creado TEXT NOT NULL, "
                     "vector BLOB NOT NULL, subido INTEGER DEFAULT 0)")
         # Lo olvidado que ya estaba en Supabase: se reintenta borrarlo allá hasta que se pueda
-        con.execute("CREATE TABLE IF NOT EXISTS borrar_en_nube (id TEXT PRIMARY KEY)")
         if muchos:
             con.executemany(sql, params)
             filas = []
@@ -75,22 +70,13 @@ def _fuentes():
     return res
 
 
-def _id_nube(local_id):
-    return f"{nube.EQUIPO}:{local_id}"
-
-
 def indexar(limite_lotes=20):
-    """Una pasada: indexa lo nuevo, borra lo olvidado (local y en la nube). Devuelve cuántos
-    agregó y cuántos borró."""
+    """Una pasada: indexa lo nuevo y borra lo olvidado. Devuelve cuántos agregó y cuántos borró."""
     fuentes = _fuentes()
     actuales = {f["id"] for f in _q("SELECT id FROM vectores")}
     nuevos = [i for i in fuentes if i not in actuales]
     viejos = [i for i in actuales if i not in fuentes]
     if viejos:
-        en_nube = [f["id"] for f in _q("SELECT id FROM vectores WHERE subido = 1")
-                   if f["id"] in set(viejos)]
-        _q("INSERT OR IGNORE INTO borrar_en_nube (id) VALUES (?)", [(i,) for i in en_nube],
-           escribir=True, muchos=True)
         _q("DELETE FROM vectores WHERE id = ?", [(i,) for i in viejos], escribir=True, muchos=True)
     agregados = 0
     for k in range(0, min(len(nuevos), LOTE * limite_lotes), LOTE):
@@ -104,43 +90,6 @@ def indexar(limite_lotes=20):
     if agregados or viejos:
         _estado["cambios"] += 1
     return agregados, len(viejos)
-
-
-def borrar_pendientes_en_nube():
-    """Borra en Supabase lo que olvidaste (si falla, queda pendiente y se reintenta)."""
-    ids = [f["id"] for f in _q("SELECT id FROM borrar_en_nube")]
-    if not ids or not nube.lista():
-        return 0
-    for k in range(0, len(ids), 50):
-        lote = ids[k:k + 50]
-        lista = ",".join(f'"{_id_nube(i)}"' for i in lote)
-        nube.peticion("DELETE", f"/rest/v1/recuerdos?id=in.({lista})")
-        _q("DELETE FROM borrar_en_nube WHERE id = ?", [(i,) for i in lote], escribir=True, muchos=True)
-    return len(ids)
-
-
-def subir(maximo=500):
-    """Sube a Supabase lo que aún no está allá (en lotes de 100). Devuelve cuántos subió."""
-    if not nube.lista():
-        return 0
-    borrar_pendientes_en_nube()   # primero lo olvidado: que no quede nada que no quieres allá
-    filas = [dict(f) for f in _q("SELECT id, tipo, texto, creado, vector FROM vectores WHERE subido = 0 "
-                                 "LIMIT ?", (maximo,))]
-    subidos = 0
-    for k in range(0, len(filas), 100):
-        lote = filas[k:k + 100]
-        cuerpo = [{"id": _id_nube(f["id"]), "equipo": nube.EQUIPO, "tipo": f["tipo"], "texto": f["texto"],
-                   "creado": f["creado"],
-                   "embedding": "[" + ",".join(f"{x:.6f}" for x in np.frombuffer(f["vector"], dtype=np.float32)) + "]"}
-                  for f in lote]
-        nube.peticion("POST", "/rest/v1/recuerdos", json=cuerpo,
-                      encabezados={"Prefer": "resolution=merge-duplicates,return=minimal"})
-        _q("UPDATE vectores SET subido = 1 WHERE id = ?", [(f["id"],) for f in lote],
-           escribir=True, muchos=True)
-        subidos += len(lote)
-    if subidos:
-        _estado["ultima_subida"] = time.time()
-    return subidos
 
 
 # ---------- Buscar ----------
@@ -167,7 +116,7 @@ def buscar(consulta, k=8, tipo=None, minimo=SIMILITUD_MINIMA, desde=None, hasta=
     v = embeddings([consulta])[0]
     m, filas = _matriz()
     if len(filas) == 0:
-        return _buscar_en_nube(v, k, tipo, minimo)
+        return []
     s = m @ v
     orden = np.argsort(-s)
     res = []
@@ -182,20 +131,6 @@ def buscar(consulta, k=8, tipo=None, minimo=SIMILITUD_MINIMA, desde=None, hasta=
         res.append({"tipo": f["tipo"], "ref": f["ref"], "texto": f["texto"], "creado": f["creado"],
                     "similitud": float(s[i])})
     return res
-
-
-def _buscar_en_nube(v, k, tipo, minimo):
-    """Sin índice local (otra PC, o recién instalado): se le pregunta a Supabase."""
-    if not nube.lista():
-        return []
-    try:
-        r = nube.peticion("POST", "/rest/v1/rpc/buscar_recuerdos", json={
-            "consulta": "[" + ",".join(f"{x:.6f}" for x in v) + "]", "cuantos": k,
-            "tipo_filtro": tipo})
-    except nube.NubeError:
-        return []
-    return [{"tipo": f["tipo"], "ref": None, "texto": f["texto"], "creado": f["creado"],
-             "similitud": float(f["similitud"])} for f in r.json() if f["similitud"] >= minimo]
 
 
 def contexto(texto, k=3, minimo=0.55):
@@ -240,11 +175,6 @@ def _bucle():
             agregados, borrados = indexar()
             if agregados or borrados:
                 print(f"[Memoria: {agregados} recuerdos indexados, {borrados} olvidados]")
-            subidos = subir()
-            if subidos:
-                print(f"[Memoria: {subidos} recuerdos copiados a Supabase]")
-        except nube.NubeError as e:
-            print(f"[Memoria: Supabase: {e}]")
         except Exception as e:
             print(f"[Memoria: {type(e).__name__}: {str(e)[:100]}]")
         time.sleep(60)

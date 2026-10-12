@@ -309,27 +309,6 @@ largos se analizan por partes. Todo en `documentos.py`.
 
 En `entorno.py`. Usa la misma fuente de cámara que "¿qué ves?" (`camara.fuente`).
 
-## Memoria por significado y respaldos en Supabase (`semantica.py`, `nube.py`, `respaldo.py`)
-
-**Memoria por significado:** Jarvis encuentra "lo que te dije del viaje" aunque hayas dicho
-"vacaciones en Oaxaca". Cada mensaje tuyo y cada dato que sabe de ti se convierte en un
-embedding con un modelo abierto que corre en tu PC (`paraphrase-multilingual` vía Ollama, en el
-procesador: ~25 ms por búsqueda, sin internet). Lo usan "¿de qué hablamos de...?", "¿qué sabes de
-mí sobre...?" y, en las preguntas que no son órdenes directas, Jarvis toma solo lo relevante de
-conversaciones pasadas. Si dices "olvida lo de X" también se borran las conversaciones donde lo
-dijiste, del índice y de Supabase.
-
-**Supabase (opcional):** "Jarvis, conecta Supabase" pide la URL del proyecto, la clave secreta
-(Settings > API Keys) y una frase para cifrar tus respaldos; si falta la tabla, copia
-`supabase/esquema.sql` y abre el SQL Editor para pegarlo y darle Run (la tabla queda con RLS: la
-clave pública no puede leer nada). Desde ahí:
-- Una copia de la memoria por significado se sube en segundo plano (pgvector).
-- **Un respaldo diario cifrado** (memoria, preferencias, pendientes, hábitos, config.json y
-  avatares) al bucket privado `respaldos`; se guardan los últimos 7. "Respáldate" lo hace ya.
-- Recuperar en esta u otra PC (con Jarvis cerrado): `.venv\Scripts\python respaldo.py restaurar`.
-
-Sin Supabase o sin internet, Jarvis funciona igual: todo se lee de tu PC.
-
 ## El día y la noche (`ciclo.py`)
 
 **En la mañana**, la primera vez que te ve (o que usas la computadora) te da el resumen del día:
@@ -417,41 +396,6 @@ adelantar usan los **controles multimedia de Windows** (el panel que sale al sub
 funcionan con YouTube, Spotify o cualquier reproductor, sin el foco ni el ratón, aunque YouTube
 haya escondido sus controles. Pantalla completa, subtítulos y velocidad usan los atajos de
 YouTube. Lo peligroso (comprar, borrar, enviar...) se confirma antes de pulsarlo.
-
-## Modo realidad aumentada (tipo Vision Pro)
-
-"Jarvis, activa el modo realidad aumentada": la pantalla completa se vuelve la webcam y encima
-flotan tus ventanas abiertas **en vivo** y los iconos de YouTube, Spotify y Steam. Con las manos:
-
-- Pellizco corto (pulgar con índice) sobre una ventana o icono → se abre grande e interactiva.
-- **Se usa como un escritorio normal.** Cualquier ventana que se vea grande se usa directo (tocarla
-  la enfoca y le da clic ahí mismo, sin reacomodar nada): toque = clic, dos toques = doble clic
-  (abrir archivos y carpetas), **pulgar con dedo medio = clic derecho** (menú contextual),
-  pellizcar y deslizar = scroll, mantener ½ s y mover = arrastrar.
-- **Mover archivos y carpetas:** mantén el pellizco sobre el archivo y llévalo a otra ventana (se
-  pinta de naranja): al soltar cae ahí, como con el ratón. Con el botón **Mosaico** (arriba)
-  tienes hasta 4 ventanas grandes y en vivo a la vez; las ventanas reales también se acomodan
-  lado a lado (para que se lean y se pueda soltar en ellas) y al salir vuelven a como estaban,
-  aunque Jarvis se cierre de golpe.
-- **Escribir:** al tocar un campo de texto aparece un **teclado virtual** (también con el botón
-  Teclado): ñ, acentos (´ y la vocal), Mayús, Borrar sostenido, Enter, Tab, flechas, Copiar y
-  Pegar; arriba dice a qué ventana va y lo último que escribiste. El teclado físico y dictarle a
-  Jarvis ("escribe lofi hip hop") también funcionan.
-- Barra de título: arrastrar mueve el panel; Reducir, Escritorio y X (la X y Salir hay que mantenerlas).
-- Salir: botón Salir, decirlo o mantener Esc.
-
-Todo reacciona a la mano: el anillo del cursor se cierra mientras juntas los dedos y se ilumina
-sobre lo que se puede tocar; cada toque deja una onda. Al agarrar un panel se levanta (sombra); al
-arrastrarlo se inclina hacia donde va, se balancea como colgado de la mano y su borde de adelante
-brilla; si lo sueltas en movimiento sigue un poco y se acomoda con un rebote (sin salirse de la
-pantalla). Sobre "Llevar al escritorio" la ventana se encoge hacia tu mano. Los iconos del dock
-son elásticos (se estiran hacia la mano y regresan) y rebotan mientras su app abre. Un scroll
-rápido sigue solo y se frena, como en el celular. Las ventanas aparecen creciendo y al cerrarse
-se desvanecen. Si la cámara va lenta (poca luz), la interfaz sigue a 30 fps igual.
-
-Usa el mismo lector de cámara que los gestos y la presencia, y mientras está activo **los gestos
-✋👋🤟 se pausan** (las manos son de la realidad aumentada). En `realidad.py`; las ventanas en
-vivo usan Windows Graphics Capture (`windows-capture`).
 
 ## El avatar del HUD (`avatares.py`)
 
